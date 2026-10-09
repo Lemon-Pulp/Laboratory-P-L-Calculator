@@ -1,7 +1,7 @@
 /**
  * Grace Laboratory - Revenue & Profit/Loss Calculation Engine & Portal
  * Standalone Client-Side Application for GitHub Pages
- * Features: Multi-Month IndexedDB Storage, Beautiful Excel Export, Fuzzy Matcher
+ * Features: Permanent Doctor Overrides Persistence, Multi-Month IndexedDB Storage, Executive PDF Dossier, WhatsApp Sharing
  */
 
 var AppState = window.AppState = {
@@ -113,9 +113,15 @@ const LabStorage = {
 // ==========================================
 
 async function initApp() {
+  // Load Base Cuts + Permanent Custom Overrides
+  const customOverrides = JSON.parse(localStorage.getItem('grace_custom_doctor_overrides') || '{}');
   const savedCuts = localStorage.getItem('grace_dr_cuts');
-  AppState.doctorCuts = savedCuts ? JSON.parse(savedCuts) : { ...DEFAULT_DOCTOR_CUTS };
+  const loadedCuts = savedCuts ? JSON.parse(savedCuts) : { ...DEFAULT_DOCTOR_CUTS };
+  
+  // Merge: Default Cuts -> Loaded Cuts -> User Custom Overrides (Highest priority, NEVER lost)
+  AppState.doctorCuts = Object.assign({}, DEFAULT_DOCTOR_CUTS, loadedCuts, customOverrides);
 
+  // Load Branch Expenses from LocalStorage or Defaults
   const savedExpenses = localStorage.getItem('grace_branch_expenses');
   AppState.branchExpenses = savedExpenses ? JSON.parse(savedExpenses) : JSON.parse(JSON.stringify(DEFAULT_BRANCH_EXPENSES));
 
@@ -141,7 +147,12 @@ async function initApp() {
     AppState.parsedBills = combinedBills;
     AppState.months = monthsList;
     AppState.selectedMonth = monthsList[monthsList.length - 1]; // Default to latest month
+
+    // Re-evaluate doctor matches using the latest doctor cut database
+    recomputeAllDoctorMatches();
+
     updateMonthSelector();
+    renderUnmatchedDoctorsAlert();
     calculateAndRender();
     renderHistoryModal();
     console.log(`Loaded ${storedMonths.length} stored month(s) from database!`);
@@ -151,15 +162,17 @@ async function initApp() {
 }
 
 // ==========================================
-// 3. DOCTOR NAME NORMALIZATION & MATCHING
+// 3. DOCTOR NORMALIZATION & SMART MATCHING
 // ==========================================
 
 function cleanDoctorName(name) {
   if (!name) return '';
   let s = String(name).trim();
   s = s.replace(/^(Dr\.|Dr\s+|DR\.|DR\s+|Doctor\s+)/i, '').trim();
-  s = s.replace(/[.\s-]+$/, '').trim();
-  s = s.replace(/\s+/g, ' ');
+  s = s.replace(/\(.*?\)/g, '').trim(); // Remove parentheticals
+  s = s.replace(/[.\s-]+$/, '').trim(); // Remove trailing punctuation
+  s = s.replace(/[.]/g, ' ');           // Replace internal dots with space (N.S. -> N S)
+  s = s.replace(/\s+/g, ' ');           // Collapse multiple spaces
   return s;
 }
 
@@ -185,14 +198,28 @@ function levenshteinDistance(a, b) {
 }
 
 function matchDoctor(docName) {
-  if (!docName || String(docName).trim().toUpperCase() === 'SELF') {
+  if (!docName || docName.trim() === '.' || docName.trim() === '') {
     return { matchedName: 'SELF', percentage: 0, matchType: 'SELF', confidence: 1.0 };
+  }
+
+  const rawUpper = String(docName).trim().toUpperCase();
+  if (rawUpper === 'SELF' || rawUpper === 'SELF 1' || rawUpper.includes('SELF')) {
+    return { matchedName: 'SELF', percentage: 0, matchType: 'SELF', confidence: 1.0 };
+  }
+
+  // 1. Check exact raw match in dictionary (e.g. user manually assigned raw string)
+  if (AppState.doctorCuts[docName] !== undefined) {
+    return { matchedName: docName, percentage: Number(AppState.doctorCuts[docName]), matchType: 'EXACT', confidence: 1.0 };
   }
 
   const cleaned = cleanDoctorName(docName);
   const cleanedLower = cleaned.toLowerCase();
 
-  // 1. Exact or Cleaned Exact Match
+  if (cleanedLower === 'self' || cleanedLower.includes('ongc')) {
+    return { matchedName: 'SELF', percentage: 0, matchType: 'SELF', confidence: 1.0 };
+  }
+
+  // 2. Exact match on cleaned string
   for (const [masterDoc, pct] of Object.entries(AppState.doctorCuts)) {
     if (masterDoc.toLowerCase() === docName.toLowerCase() || masterDoc.toLowerCase() === cleanedLower) {
       return { matchedName: masterDoc, percentage: Number(pct), matchType: 'EXACT', confidence: 1.0 };
@@ -203,43 +230,37 @@ function matchDoctor(docName) {
     }
   }
 
-  // 2. Strip Parentheses
-  const strippedParen = cleanedLower.replace(/\(.*?\)/g, '').trim().replace(/[.\s-]+$/, '');
-  if (strippedParen && strippedParen !== cleanedLower) {
-    for (const [masterDoc, pct] of Object.entries(AppState.doctorCuts)) {
-      if (cleanDoctorName(masterDoc).toLowerCase() === strippedParen) {
-        return { matchedName: masterDoc, percentage: Number(pct), matchType: 'STRIPPED_PAREN', confidence: 0.95 };
-      }
+  // 3. Strip Middle Initials (e.g. 'brijesh k patel' -> 'brijesh patel', 'umang c joshi' -> 'umang joshi')
+  const strippedInitials = cleanedLower.replace(/\s+[a-z]\s+/g, ' ').trim();
+  for (const [masterDoc, pct] of Object.entries(AppState.doctorCuts)) {
+    const cleanMaster = cleanDoctorName(masterDoc).toLowerCase().replace(/\s+[a-z]\s+/g, ' ').trim();
+    if (cleanMaster === strippedInitials) {
+      return { matchedName: masterDoc, percentage: Number(pct), matchType: 'STRIPPED_INITIAL', confidence: 0.96 };
     }
   }
 
-  // 3. Strip Middle Initials (e.g. 'Umang C Joshi' -> 'Umang Joshi')
-  const strippedInitials = strippedParen.replace(/\s+[a-z]\.?\s+/g, ' ').trim();
-  if (strippedInitials && strippedInitials !== strippedParen) {
-    for (const [masterDoc, pct] of Object.entries(AppState.doctorCuts)) {
-      if (cleanDoctorName(masterDoc).toLowerCase() === strippedInitials) {
-        return { matchedName: masterDoc, percentage: Number(pct), matchType: 'STRIPPED_INITIAL', confidence: 0.95 };
-      }
-    }
-  }
-
-  // 4. Token Overlap without generic stopwords ('hospital', 'general', 'clinic')
-  const wordsDoc = strippedInitials.split(/\s+/).filter(w => w.length >= 3 && !['hospital', 'general', 'clinic', 'maternity', 'nursing', 'home'].includes(w));
+  // 4. Token Overlap without generic stopwords ('hospital', 'general', 'clinic', 'maternity', 'nursing')
+  const stopWords = ['hospital', 'general', 'clinic', 'maternity', 'nursing', 'home', 'centre', 'center'];
+  const wordsDoc = strippedInitials.split(/\s+/).filter(w => w.length >= 3 && !stopWords.includes(w));
   if (wordsDoc.length > 0) {
     const docSet = new Set(wordsDoc);
     for (const [masterDoc, pct] of Object.entries(AppState.doctorCuts)) {
-      const wordsMaster = cleanDoctorName(masterDoc).toLowerCase().split(/\s+/).filter(w => w.length >= 3 && !['hospital', 'general', 'clinic', 'maternity', 'nursing', 'home'].includes(w));
+      const wordsMaster = cleanDoctorName(masterDoc).toLowerCase().split(/\s+/).filter(w => w.length >= 3 && !stopWords.includes(w));
       if (wordsMaster.length > 0 && wordsMaster.length === docSet.size && wordsMaster.every(w => docSet.has(w))) {
         return { matchedName: masterDoc, percentage: Number(pct), matchType: 'TOKEN_OVERLAP', confidence: 0.94 };
       }
     }
   }
 
-  // 5. Strip Punctuation
-  const alphaNumericClean = cleanedLower.replace(/[^a-z0-9]/g, '');
-  for (const [masterDoc, pct] of Object.entries(AppState.doctorCuts)) {
-    if (cleanDoctorName(masterDoc).toLowerCase().replace(/[^a-z0-9]/g, '') === alphaNumericClean) {
-      return { matchedName: masterDoc, percentage: Number(pct), matchType: 'STRIPPED_PUNCT', confidence: 0.92 };
+  // 5. Vowel-Collapse Normalization (e.g. shukla vs shukala, dube vs dubey, chotalia vs chotalya)
+  const noVowelsDoc = strippedInitials.replace(/[aeiou\s]/g, '');
+  if (noVowelsDoc.length >= 4) {
+    for (const [masterDoc, pct] of Object.entries(AppState.doctorCuts)) {
+      const cleanMaster = cleanDoctorName(masterDoc).toLowerCase().replace(/\s+[a-z]\s+/g, ' ').trim();
+      const noVowelsMaster = cleanMaster.replace(/[aeiou\s]/g, '');
+      if (noVowelsDoc === noVowelsMaster) {
+        return { matchedName: masterDoc, percentage: Number(pct), matchType: 'PHONETIC_MATCH', confidence: 0.90 };
+      }
     }
   }
 
@@ -267,7 +288,33 @@ function matchDoctor(docName) {
     };
   }
 
+  // 7. Genuinely Unmatched
   return { matchedName: docName, percentage: 0, matchType: 'UNMATCHED (0% fallback)', confidence: 0.0 };
+}
+
+// Recomputes doctor matches across all parsed transactions and rebuilds unmatched list
+function recomputeAllDoctorMatches() {
+  AppState.parsedBills.forEach(b => {
+    const mResult = matchDoctor(b.doctor);
+    b.matchedDoctor = mResult.matchedName;
+    b.doctorCutPct = mResult.percentage;
+    b.matchType = mResult.matchType;
+  });
+
+  const unmatched = new Map();
+  AppState.parsedBills.forEach(b => {
+    // Only flag genuinely unmatched doctors, never recognized 0% doctors
+    if (b.matchType && b.matchType.startsWith('UNMATCHED') && b.doctor.toUpperCase() !== 'SELF' && b.doctor !== '' && b.doctor !== '.') {
+      if (!unmatched.has(b.doctor)) {
+        unmatched.set(b.doctor, { doctorName: b.doctor, branch: b.branch, count: 1, totalReceived: b.received });
+      } else {
+        const item = unmatched.get(b.doctor);
+        item.count++;
+        item.totalReceived += b.received;
+      }
+    }
+  });
+  AppState.unmatchedDoctors = Array.from(unmatched.values());
 }
 
 // ==========================================
@@ -391,20 +438,8 @@ async function processExtractedRows(rawRows, fileName) {
     AppState.parsedBills = AppState.parsedBills.filter(b => b.month !== mName).concat(bills);
   }
 
-  // Strictly check matchType starts with UNMATCHED (Never flag recognized 0% doctors!)
-  const unmatched = new Map();
-  AppState.parsedBills.forEach(b => {
-    if (b.matchType && b.matchType.startsWith('UNMATCHED') && b.doctor.toUpperCase() !== 'SELF' && b.doctor !== '') {
-      if (!unmatched.has(b.doctor)) {
-        unmatched.set(b.doctor, { doctorName: b.doctor, branch: b.branch, count: 1, totalReceived: b.received });
-      } else {
-        const item = unmatched.get(b.doctor);
-        item.count++;
-        item.totalReceived += b.received;
-      }
-    }
-  });
-  AppState.unmatchedDoctors = Array.from(unmatched.values());
+  // Re-match and build unmatched list
+  recomputeAllDoctorMatches();
 
   const uploadedMonths = Object.keys(monthBuckets);
   if (uploadedMonths.length > 0) {
@@ -443,6 +478,7 @@ function loadSampleData() {
   AppState.months = [monthLabel];
   AppState.selectedMonth = monthLabel;
 
+  recomputeAllDoctorMatches();
   updateMonthSelector();
   renderUnmatchedDoctorsAlert();
   calculateAndRender();
@@ -787,7 +823,7 @@ function renderFullPLSheet(results) {
   cols.forEach(c => html += `<td class="p-2 text-right border border-slate-800 ${c.netProfit >= 0 ? 'text-emerald-400' : 'text-rose-400'}">${formatNumber(c.netProfit)}</td>`);
   html += `<td class="p-2 text-right bg-slate-950 border border-slate-800 ${results.totals.netProfit >= 0 ? 'text-emerald-400' : 'text-rose-400'}">${formatNumber(results.totals.netProfit)}</td></tr>`;
 
-  html += `<tr class="bg-slate-100 font-bold border-b border-slate-300"><td class="p-2 text-slate-800 border border-slate-300">Profit / Loss (%)</td>`;
+  html += `<tr class="bg-slate-100 font-bold border-b border-slate-300"><td class="p-2 border border-slate-300">Profit / Loss (%)</td>`;
   cols.forEach(c => html += `<td class="p-2 text-right border border-slate-300 ${c.profitPct >= 0 ? 'text-emerald-600' : 'text-rose-600'}">${c.profitPct.toFixed(1)}%</td>`);
   html += `<td class="p-2 text-right bg-slate-200 border border-slate-300 font-bold">${results.totals.profitPct.toFixed(1)}%</td></tr>`;
 
@@ -926,6 +962,7 @@ async function deleteStoredMonth(monthName) {
     AppState.months = AppState.months.filter(m => m !== monthName);
     AppState.parsedBills = AppState.parsedBills.filter(b => b.month !== monthName);
     AppState.selectedMonth = AppState.months.length > 0 ? AppState.months[0] : 'ALL';
+    recomputeAllDoctorMatches();
     updateMonthSelector();
     calculateAndRender();
     renderHistoryModal();
@@ -939,6 +976,7 @@ async function clearAllHistoricalData() {
     AppState.months = [];
     AppState.parsedBills = [];
     AppState.selectedMonth = 'ALL';
+    recomputeAllDoctorMatches();
     updateMonthSelector();
     calculateAndRender();
     renderHistoryModal();
@@ -1208,41 +1246,75 @@ function renderDoctorMasterTable(searchQuery = '') {
   `).join('');
 }
 
-function updateDoctorCut(docName, newPct) {
+async function updateDoctorCut(docName, newPct) {
   const val = parseFloat(newPct) || 0;
+  
+  // Save permanently in user custom overrides
+  const customOverrides = JSON.parse(localStorage.getItem('grace_custom_doctor_overrides') || '{}');
+  customOverrides[docName] = val;
+  localStorage.setItem('grace_custom_doctor_overrides', JSON.stringify(customOverrides));
+
   AppState.doctorCuts[docName] = val;
   localStorage.setItem('grace_dr_cuts', JSON.stringify(AppState.doctorCuts));
+
+  // Re-match and save updated bills to IndexedDB
+  recomputeAllDoctorMatches();
+  await persistBillsToIndexedDB();
+
   showToast(`Updated ${docName} cut to ${val}%`);
   calculateAndRender();
 }
 
-function addNewDoctor() {
+async function addNewDoctor() {
   const name = prompt('Enter Doctor Name:');
   if (!name || !name.trim()) return;
   const pctStr = prompt(`Enter Referral Cut Percentage for "${name.trim()}":`, '40');
   const pct = parseFloat(pctStr) || 0;
 
-  AppState.doctorCuts[name.trim()] = pct;
+  const docName = name.trim();
+  const customOverrides = JSON.parse(localStorage.getItem('grace_custom_doctor_overrides') || '{}');
+  customOverrides[docName] = pct;
+  localStorage.setItem('grace_custom_doctor_overrides', JSON.stringify(customOverrides));
+
+  AppState.doctorCuts[docName] = pct;
   localStorage.setItem('grace_dr_cuts', JSON.stringify(AppState.doctorCuts));
+
+  recomputeAllDoctorMatches();
+  await persistBillsToIndexedDB();
+
   renderDoctorMasterTable();
   calculateAndRender();
+  showToast(`Added Doctor "${docName}" with ${pct}% cut.`);
 }
 
-function deleteDoctor(docName) {
+async function deleteDoctor(docName) {
   if (confirm(`Remove doctor "${docName}" from master database?`)) {
     delete AppState.doctorCuts[docName];
     localStorage.setItem('grace_dr_cuts', JSON.stringify(AppState.doctorCuts));
+    
+    const customOverrides = JSON.parse(localStorage.getItem('grace_custom_doctor_overrides') || '{}');
+    delete customOverrides[docName];
+    localStorage.setItem('grace_custom_doctor_overrides', JSON.stringify(customOverrides));
+
+    recomputeAllDoctorMatches();
+    await persistBillsToIndexedDB();
+
     renderDoctorMasterTable();
     calculateAndRender();
+    showToast(`Removed doctor "${docName}".`);
   }
 }
 
 function resetDoctorsToDefault() {
-  if (confirm('Reset doctor list back to original 529 entries?')) {
+  if (confirm('Reset doctor list back to original 529 entries? (This will clear your custom added doctors)')) {
     localStorage.removeItem('grace_dr_cuts');
+    localStorage.removeItem('grace_custom_doctor_overrides');
     AppState.doctorCuts = { ...DEFAULT_DOCTOR_CUTS };
+    recomputeAllDoctorMatches();
+    persistBillsToIndexedDB();
     renderDoctorMasterTable();
     calculateAndRender();
+    showToast('Reset doctor cuts database to default.');
   }
 }
 
@@ -1272,81 +1344,42 @@ function renderUnmatchedDoctorsAlert() {
   `).join('');
 }
 
-function resolveUnmatchedDoctor(docName) {
-  const pct = parseFloat(prompt(`Set Doctor referral cut % for "${docName}":`, '40')) || 0;
+async function resolveUnmatchedDoctor(docName) {
+  const pctStr = prompt(`Set Doctor referral cut % for "${docName}":`, '40');
+  if (pctStr === null) return;
+  const pct = parseFloat(pctStr) || 0;
+
+  // 1. Permanently store in custom overrides so it can NEVER be lost on refresh
+  const customOverrides = JSON.parse(localStorage.getItem('grace_custom_doctor_overrides') || '{}');
+  customOverrides[docName] = pct;
+  localStorage.setItem('grace_custom_doctor_overrides', JSON.stringify(customOverrides));
+
+  // 2. Update active in-memory dictionary
   AppState.doctorCuts[docName] = pct;
   localStorage.setItem('grace_dr_cuts', JSON.stringify(AppState.doctorCuts));
 
-  AppState.parsedBills.forEach(b => {
-    if (b.doctor === docName) {
-      b.doctorCutPct = pct;
-      b.matchedDoctor = docName;
-      b.matchType = 'MANUAL_OVERRIDE';
-    }
-  });
+  // 3. Recompute all matches across all stored transactions
+  recomputeAllDoctorMatches();
 
-  AppState.unmatchedDoctors = AppState.unmatchedDoctors.filter(u => u.doctorName !== docName);
+  // 4. Permanently write updated transactions to IndexedDB
+  await persistBillsToIndexedDB();
+
   renderUnmatchedDoctorsAlert();
   renderDoctorMasterTable();
   calculateAndRender();
-  showToast(`Assigned ${pct}% to ${docName}. Calculations updated!`);
+  showToast(`Permanently saved ${pct}% for "${docName}"!`);
 }
 
-function showToast(msg) {
-  let toast = document.getElementById('app-toast');
-  if (!toast) {
-    toast = document.createElement('div');
-    toast.id = 'app-toast';
-    toast.className = 'fixed bottom-5 right-5 z-50 px-5 py-3 rounded-lg bg-slate-900 text-white text-sm shadow-xl transition-all transform duration-300 opacity-0 pointer-events-none flex items-center space-x-2';
-    document.body.appendChild(toast);
+async function persistBillsToIndexedDB() {
+  const monthBuckets = {};
+  AppState.parsedBills.forEach(b => {
+    if (!monthBuckets[b.month]) monthBuckets[b.month] = [];
+    monthBuckets[b.month].push(b);
+  });
+  for (const [mName, bills] of Object.entries(monthBuckets)) {
+    await LabStorage.saveMonthData(mName, bills);
   }
-
-  toast.innerHTML = `
-    <svg class="w-5 h-5 text-teal-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg>
-    <span>${msg}</span>
-  `;
-  toast.classList.remove('opacity-0', 'pointer-events-none');
-  toast.classList.add('opacity-100');
-
-  setTimeout(() => {
-    toast.classList.remove('opacity-100');
-    toast.classList.add('opacity-0', 'pointer-events-none');
-  }, 4000);
 }
-
-function setupEventListeners() {
-  document.getElementById('base-excel-input')?.addEventListener('change', function(e) {
-    if (e.target.files && e.target.files[0]) handleFileUpload(e.target.files[0]);
-  });
-
-  document.getElementById('month-selector')?.addEventListener('change', function() {
-    AppState.selectedMonth = this.value;
-    calculateAndRender();
-  });
-
-  document.getElementById('doctor-search-input')?.addEventListener('input', function() {
-    renderDoctorMasterTable(this.value);
-  });
-
-  document.querySelectorAll('[data-tab-target]').forEach(btn => {
-    btn.addEventListener('click', function() {
-      const target = this.dataset.tabTarget;
-      document.querySelectorAll('.tab-content').forEach(c => c.classList.add('hidden'));
-      document.querySelectorAll('[data-tab-target]').forEach(b => {
-        b.classList.remove('border-teal-500', 'text-teal-400', 'font-bold');
-        b.classList.add('border-transparent', 'text-slate-400');
-      });
-      document.getElementById(`tab-${target}`)?.classList.remove('hidden');
-      this.classList.add('border-teal-500', 'text-teal-400', 'font-bold');
-      this.classList.remove('border-transparent', 'text-slate-400');
-      if (target === 'dashboard') Object.values(AppState.charts).forEach(c => c && c.resize());
-    });
-  });
-}
-
-document.addEventListener('DOMContentLoaded', () => {
-  initApp();
-});
 
 // ==========================================
 // 10. EXECUTIVE REPORT & SHARING (PDF / WhatsApp)
@@ -1362,16 +1395,11 @@ function openExecutiveReportModal() {
   const monthTitle = res.month === 'ALL' ? 'Consolidated Financial Statement (All Months)' : `Monthly Financial Statement: ${res.month}`;
   const nowStr = new Date().toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
 
-  // Get high-res chart images if available
   let branchChartImg = '';
   let expenseChartImg = '';
   try {
-    if (AppState.charts.branchBar) {
-      branchChartImg = AppState.charts.branchBar.toBase64Image('image/png', 1.0);
-    }
-    if (AppState.charts.expenseDonut) {
-      expenseChartImg = AppState.charts.expenseDonut.toBase64Image('image/png', 1.0);
-    }
+    if (AppState.charts.branchBar) branchChartImg = AppState.charts.branchBar.toBase64Image('image/png', 1.0);
+    if (AppState.charts.expenseDonut) expenseChartImg = AppState.charts.expenseDonut.toBase64Image('image/png', 1.0);
   } catch (e) {
     console.warn('Could not generate chart base64 image:', e);
   }
@@ -1380,12 +1408,9 @@ function openExecutiveReportModal() {
     .filter(b => b.received > 0 || b.totalFixed > 0 || b.due > 0)
     .sort((a, b) => b.received - a.received);
 
-  // Build Executive HTML
   let reportHtml = `
     <!-- PAGE 1: EXECUTIVE OVERVIEW & VISUAL ANALYTICS -->
     <div class="print-page bg-white p-6 rounded-xl border border-slate-200 shadow-sm space-y-6">
-      
-      <!-- Letterhead Header -->
       <div class="flex items-center justify-between pb-4 border-b-2 border-slate-800">
         <div class="flex items-center space-x-3">
           <div class="w-12 h-12 rounded-xl bg-slate-900 text-white flex items-center justify-center font-extrabold text-2xl shadow">
@@ -1404,7 +1429,6 @@ function openExecutiveReportModal() {
         </div>
       </div>
 
-      <!-- KPI Summary Cards -->
       <div class="grid grid-cols-4 gap-3">
         <div class="p-3.5 rounded-lg border border-slate-200 bg-slate-50">
           <span class="text-[10px] font-bold uppercase tracking-wider text-slate-500">Gross Collections</span>
@@ -1433,7 +1457,6 @@ function openExecutiveReportModal() {
         </div>
       </div>
 
-      <!-- High-Res Charts Snapshot -->
       <div class="grid grid-cols-2 gap-4 pt-2">
         <div class="p-3 border border-slate-200 rounded-lg bg-white">
           <h4 class="text-xs font-bold text-slate-800 mb-2">Branch Revenue vs. Expenses</h4>
@@ -1445,7 +1468,6 @@ function openExecutiveReportModal() {
         </div>
       </div>
 
-      <!-- Financial Health & Ratio Benchmark -->
       <div class="p-3.5 border border-slate-200 rounded-lg bg-slate-50">
         <h4 class="text-xs font-bold uppercase tracking-wider text-slate-700 mb-2">Revenue Allocation Benchmark</h4>
         <div class="grid grid-cols-5 gap-2 text-center text-xs">
@@ -1476,7 +1498,6 @@ function openExecutiveReportModal() {
           </div>
         </div>
       </div>
-
     </div>
 
     <!-- PAGE 2: BRANCH PERFORMANCE & PROFITABILITY -->
@@ -1583,11 +1604,8 @@ function openExecutiveReportModal() {
     </div>
   `;
 
-  // Inject into modal preview and print container
   document.getElementById('executive-preview-body').innerHTML = reportHtml;
   document.getElementById('executive-print-container').innerHTML = reportHtml;
-
-  // Open modal
   document.getElementById('executive-modal')?.classList.remove('hidden');
 }
 
@@ -1649,3 +1667,59 @@ function copyWhatsAppSummary() {
     prompt('Copy your summary below:', text);
   }
 }
+
+function showToast(msg) {
+  let toast = document.getElementById('app-toast');
+  if (!toast) {
+    toast = document.createElement('div');
+    toast.id = 'app-toast';
+    toast.className = 'fixed bottom-5 right-5 z-50 px-5 py-3 rounded-lg bg-slate-900 text-white text-sm shadow-xl transition-all transform duration-300 opacity-0 pointer-events-none flex items-center space-x-2';
+    document.body.appendChild(toast);
+  }
+
+  toast.innerHTML = `
+    <svg class="w-5 h-5 text-teal-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg>
+    <span>${msg}</span>
+  `;
+  toast.classList.remove('opacity-0', 'pointer-events-none');
+  toast.classList.add('opacity-100');
+
+  setTimeout(() => {
+    toast.classList.remove('opacity-100');
+    toast.classList.add('opacity-0', 'pointer-events-none');
+  }, 4000);
+}
+
+function setupEventListeners() {
+  document.getElementById('base-excel-input')?.addEventListener('change', function(e) {
+    if (e.target.files && e.target.files[0]) handleFileUpload(e.target.files[0]);
+  });
+
+  document.getElementById('month-selector')?.addEventListener('change', function() {
+    AppState.selectedMonth = this.value;
+    calculateAndRender();
+  });
+
+  document.getElementById('doctor-search-input')?.addEventListener('input', function() {
+    renderDoctorMasterTable(this.value);
+  });
+
+  document.querySelectorAll('[data-tab-target]').forEach(btn => {
+    btn.addEventListener('click', function() {
+      const target = this.dataset.tabTarget;
+      document.querySelectorAll('.tab-content').forEach(c => c.classList.add('hidden'));
+      document.querySelectorAll('[data-tab-target]').forEach(b => {
+        b.classList.remove('border-teal-500', 'text-teal-400', 'font-bold');
+        b.classList.add('border-transparent', 'text-slate-400');
+      });
+      document.getElementById(`tab-${target}`)?.classList.remove('hidden');
+      this.classList.add('border-teal-500', 'text-teal-400', 'font-bold');
+      this.classList.remove('border-transparent', 'text-slate-400');
+      if (target === 'dashboard') Object.values(AppState.charts).forEach(c => c && c.resize());
+    });
+  });
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  initApp();
+});
