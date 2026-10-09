@@ -1347,3 +1347,305 @@ function setupEventListeners() {
 document.addEventListener('DOMContentLoaded', () => {
   initApp();
 });
+
+// ==========================================
+// 10. EXECUTIVE REPORT & SHARING (PDF / WhatsApp)
+// ==========================================
+
+function openExecutiveReportModal() {
+  if (!AppState.calculationResults) {
+    alert('No calculation data available to generate report.');
+    return;
+  }
+
+  const res = AppState.calculationResults;
+  const monthTitle = res.month === 'ALL' ? 'Consolidated Financial Statement (All Months)' : `Monthly Financial Statement: ${res.month}`;
+  const nowStr = new Date().toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+
+  // Get high-res chart images if available
+  let branchChartImg = '';
+  let expenseChartImg = '';
+  try {
+    if (AppState.charts.branchBar) {
+      branchChartImg = AppState.charts.branchBar.toBase64Image('image/png', 1.0);
+    }
+    if (AppState.charts.expenseDonut) {
+      expenseChartImg = AppState.charts.expenseDonut.toBase64Image('image/png', 1.0);
+    }
+  } catch (e) {
+    console.warn('Could not generate chart base64 image:', e);
+  }
+
+  const activeCols = Object.values(res.branchMap)
+    .filter(b => b.received > 0 || b.totalFixed > 0 || b.due > 0)
+    .sort((a, b) => b.received - a.received);
+
+  // Build Executive HTML
+  let reportHtml = `
+    <!-- PAGE 1: EXECUTIVE OVERVIEW & VISUAL ANALYTICS -->
+    <div class="print-page bg-white p-6 rounded-xl border border-slate-200 shadow-sm space-y-6">
+      
+      <!-- Letterhead Header -->
+      <div class="flex items-center justify-between pb-4 border-b-2 border-slate-800">
+        <div class="flex items-center space-x-3">
+          <div class="w-12 h-12 rounded-xl bg-slate-900 text-white flex items-center justify-center font-extrabold text-2xl shadow">
+            GL
+          </div>
+          <div>
+            <h2 class="text-xl font-extrabold text-slate-900 tracking-tight">Grace Medical Services Pvt. Ltd.</h2>
+            <p class="text-xs font-medium text-slate-600">Laboratory Operations • Financial Accounting & P&L Statement</p>
+          </div>
+        </div>
+        <div class="text-right text-xs">
+          <div class="inline-block px-2.5 py-1 bg-teal-50 border border-teal-200 text-teal-800 font-bold rounded uppercase tracking-wider mb-1">
+            ${res.month || 'Summary'}
+          </div>
+          <p class="text-slate-400">Generated: ${nowStr}</p>
+        </div>
+      </div>
+
+      <!-- KPI Summary Cards -->
+      <div class="grid grid-cols-4 gap-3">
+        <div class="p-3.5 rounded-lg border border-slate-200 bg-slate-50">
+          <span class="text-[10px] font-bold uppercase tracking-wider text-slate-500">Gross Collections</span>
+          <div class="text-xl font-extrabold text-slate-900 mt-1">${formatCurrency(res.totals.received)}</div>
+          <span class="text-[10px] text-amber-700 font-medium">Pending Due: ${formatCurrency(res.totals.due)}</span>
+        </div>
+        <div class="p-3.5 rounded-lg border border-slate-200 bg-slate-50">
+          <span class="text-[10px] font-bold uppercase tracking-wider text-slate-500">Fixed Overheads</span>
+          <div class="text-xl font-extrabold text-slate-900 mt-1">${formatCurrency(res.totals.fixed)}</div>
+          <span class="text-[10px] text-slate-500">Salaries, Rent & Bills</span>
+        </div>
+        <div class="p-3.5 rounded-lg border border-slate-200 bg-slate-50">
+          <span class="text-[10px] font-bold uppercase tracking-wider text-slate-500">Total Expenses</span>
+          <div class="text-xl font-extrabold text-slate-900 mt-1">${formatCurrency(res.totals.totalExpense)}</div>
+          <span class="text-[10px] text-slate-500">Doc Cuts + Reagents</span>
+        </div>
+        <div class="p-3.5 rounded-lg border border-slate-200 ${res.totals.netProfit >= 0 ? 'bg-emerald-50/70 border-emerald-300' : 'bg-rose-50/70 border-rose-300'}">
+          <div class="flex justify-between items-center">
+            <span class="text-[10px] font-bold uppercase tracking-wider text-slate-700">Net Profit</span>
+            <span class="text-xs font-bold ${res.totals.profitPct >= 0 ? 'text-emerald-700' : 'text-rose-700'}">${res.totals.profitPct.toFixed(1)}% Margin</span>
+          </div>
+          <div class="text-xl font-extrabold ${res.totals.netProfit >= 0 ? 'text-emerald-700' : 'text-rose-700'} mt-1">
+            ${formatCurrency(res.totals.netProfit)}
+          </div>
+          <span class="text-[10px] text-slate-500">Net Operating P&L</span>
+        </div>
+      </div>
+
+      <!-- High-Res Charts Snapshot -->
+      <div class="grid grid-cols-2 gap-4 pt-2">
+        <div class="p-3 border border-slate-200 rounded-lg bg-white">
+          <h4 class="text-xs font-bold text-slate-800 mb-2">Branch Revenue vs. Expenses</h4>
+          ${branchChartImg ? `<img src="${branchChartImg}" class="w-full h-48 object-contain">` : '<div class="h-48 flex items-center justify-center text-slate-400">Chart rendering...</div>'}
+        </div>
+        <div class="p-3 border border-slate-200 rounded-lg bg-white">
+          <h4 class="text-xs font-bold text-slate-800 mb-2">Operating Expense Allocation</h4>
+          ${expenseChartImg ? `<img src="${expenseChartImg}" class="w-full h-48 object-contain">` : '<div class="h-48 flex items-center justify-center text-slate-400">Chart rendering...</div>'}
+        </div>
+      </div>
+
+      <!-- Financial Health & Ratio Benchmark -->
+      <div class="p-3.5 border border-slate-200 rounded-lg bg-slate-50">
+        <h4 class="text-xs font-bold uppercase tracking-wider text-slate-700 mb-2">Revenue Allocation Benchmark</h4>
+        <div class="grid grid-cols-5 gap-2 text-center text-xs">
+          <div class="p-2 bg-white rounded border border-slate-200">
+            <span class="text-[10px] text-slate-500 block">Doctor Referral Cuts</span>
+            <span class="font-extrabold text-amber-700">${res.totals.received > 0 ? ((res.totals.docCut / res.totals.received) * 100).toFixed(1) : 0}%</span>
+            <span class="text-[10px] text-slate-400 block">${formatCurrency(res.totals.docCut)}</span>
+          </div>
+          <div class="p-2 bg-white rounded border border-slate-200">
+            <span class="text-[10px] text-slate-500 block">Fixed Overheads</span>
+            <span class="font-extrabold text-indigo-700">${res.totals.received > 0 ? ((res.totals.fixed / res.totals.received) * 100).toFixed(1) : 0}%</span>
+            <span class="text-[10px] text-slate-400 block">${formatCurrency(res.totals.fixed)}</span>
+          </div>
+          <div class="p-2 bg-white rounded border border-slate-200">
+            <span class="text-[10px] text-slate-500 block">Reagents & Consumables</span>
+            <span class="font-extrabold text-cyan-700">${res.totals.received > 0 ? ((res.totals.reagent / res.totals.received) * 100).toFixed(1) : 0}%</span>
+            <span class="text-[10px] text-slate-400 block">${formatCurrency(res.totals.reagent)}</span>
+          </div>
+          <div class="p-2 bg-white rounded border border-slate-200">
+            <span class="text-[10px] text-slate-500 block">Stationary</span>
+            <span class="font-extrabold text-slate-700">1.0%</span>
+            <span class="text-[10px] text-slate-400 block">${formatCurrency(res.totals.stationary)}</span>
+          </div>
+          <div class="p-2 bg-white rounded border border-slate-200">
+            <span class="text-[10px] text-slate-500 block">Net Profit Margin</span>
+            <span class="font-extrabold ${res.totals.profitPct >= 0 ? 'text-emerald-700' : 'text-rose-700'}">${res.totals.profitPct.toFixed(1)}%</span>
+            <span class="text-[10px] text-slate-400 block">${formatCurrency(res.totals.netProfit)}</span>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- PAGE 2: BRANCH PERFORMANCE & PROFITABILITY -->
+    <div class="print-page bg-white p-6 rounded-xl border border-slate-200 shadow-sm space-y-4">
+      <div class="pb-3 border-b border-slate-200 flex justify-between items-center">
+        <div>
+          <h3 class="text-base font-extrabold text-slate-900">Branch Operations & Profitability Statement</h3>
+          <p class="text-xs text-slate-500">${monthTitle}</p>
+        </div>
+        <span class="text-xs text-slate-400">Page 2 of 3</span>
+      </div>
+
+      <div class="overflow-x-auto">
+        <table class="min-w-full text-xs text-left border">
+          <thead class="bg-slate-100 font-bold border-b border-slate-300">
+            <tr>
+              <th class="p-2 border">Branch / Cost Unit</th>
+              <th class="p-2 text-right border">Revenue (₹)</th>
+              <th class="p-2 text-right border">Due (₹)</th>
+              <th class="p-2 text-right border">Doc Cuts (₹)</th>
+              <th class="p-2 text-right border">Reagents (₹)</th>
+              <th class="p-2 text-right border">Fixed Overheads (₹)</th>
+              <th class="p-2 text-right border">Total Expenses (₹)</th>
+              <th class="p-2 text-right border">Net Profit/Loss (₹)</th>
+              <th class="p-2 text-right border">Margin (%)</th>
+              <th class="p-2 text-center border">Status</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-slate-200">
+            ${activeCols.map(b => {
+              const isP = b.netProfit >= 0;
+              return `
+                <tr>
+                  <td class="p-2 font-semibold border">${b.branchName}</td>
+                  <td class="p-2 text-right border">${formatNumber(b.received)}</td>
+                  <td class="p-2 text-right text-amber-700 border">${b.due > 0 ? formatNumber(b.due) : '-'}</td>
+                  <td class="p-2 text-right border">${formatNumber(b.docCutAmount)}</td>
+                  <td class="p-2 text-right border">${formatNumber(b.reagentAmount)}</td>
+                  <td class="p-2 text-right border">${formatNumber(b.totalFixed)}</td>
+                  <td class="p-2 text-right font-semibold border">${formatNumber(b.totalExpense)}</td>
+                  <td class="p-2 text-right font-bold border ${isP ? 'text-emerald-700' : 'text-rose-700'}">${formatNumber(b.netProfit)}</td>
+                  <td class="p-2 text-right font-bold border ${isP ? 'text-emerald-700' : 'text-rose-700'}">${b.profitPct.toFixed(1)}%</td>
+                  <td class="p-2 text-center border font-bold text-[10px] ${isP ? 'text-emerald-700' : 'text-rose-700'}">${isP ? 'PROFIT' : 'LOSS'}</td>
+                </tr>
+              `;
+            }).join('')}
+            <tr class="bg-slate-900 text-white font-extrabold">
+              <td class="p-2 border">TOTAL NETWORK</td>
+              <td class="p-2 text-right border">${formatNumber(res.totals.received)}</td>
+              <td class="p-2 text-right border text-amber-300">${formatNumber(res.totals.due)}</td>
+              <td class="p-2 text-right border">${formatNumber(res.totals.docCut)}</td>
+              <td class="p-2 text-right border">${formatNumber(res.totals.reagent)}</td>
+              <td class="p-2 text-right border">${formatNumber(res.totals.fixed)}</td>
+              <td class="p-2 text-right border">${formatNumber(res.totals.totalExpense)}</td>
+              <td class="p-2 text-right border ${res.totals.netProfit >= 0 ? 'text-emerald-400' : 'text-rose-400'}">${formatNumber(res.totals.netProfit)}</td>
+              <td class="p-2 text-right border font-bold">${res.totals.profitPct.toFixed(1)}%</td>
+              <td class="p-2 text-center border">${res.totals.netProfit >= 0 ? 'PROFIT' : 'LOSS'}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- PAGE 3: TOP DOCTORS PERFORMANCE & REFERRAL PAYOUT -->
+    <div class="print-page bg-white p-6 rounded-xl border border-slate-200 shadow-sm space-y-4">
+      <div class="pb-3 border-b border-slate-200 flex justify-between items-center">
+        <div>
+          <h3 class="text-base font-extrabold text-slate-900">Top Referring Doctors & Commission Audit</h3>
+          <p class="text-xs text-slate-500">${monthTitle} • Ranked by Gross Revenue Generated</p>
+        </div>
+        <span class="text-xs text-slate-400">Page 3 of 3</span>
+      </div>
+
+      <div class="overflow-x-auto">
+        <table class="min-w-full text-xs text-left border">
+          <thead class="bg-slate-100 font-bold border-b border-slate-300">
+            <tr>
+              <th class="p-2 w-10 border">#</th>
+              <th class="p-2 border">Consulting Doctor Name</th>
+              <th class="p-2 border">Branch Location</th>
+              <th class="p-2 text-center border">Cut %</th>
+              <th class="p-2 text-center border">Patients</th>
+              <th class="p-2 text-right border">Gross Revenue (₹)</th>
+              <th class="p-2 text-right border">Referral Cut (₹)</th>
+              <th class="p-2 text-right border">Due (₹)</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-slate-200">
+            ${res.doctorList.slice(0, 25).map((d, i) => `
+              <tr>
+                <td class="p-2 text-slate-400 border">${i + 1}</td>
+                <td class="p-2 font-semibold border">${d.doctorName}</td>
+                <td class="p-2 text-slate-600 border">${d.branch}</td>
+                <td class="p-2 text-center border font-semibold">${d.cutPct}%</td>
+                <td class="p-2 text-center border">${d.patientCount}</td>
+                <td class="p-2 text-right font-medium border">${formatNumber(d.totalReceived)}</td>
+                <td class="p-2 text-right font-bold text-indigo-700 border">${formatNumber(d.totalCutAmount)}</td>
+                <td class="p-2 text-right text-amber-700 border">${d.totalDue > 0 ? formatNumber(d.totalDue) : '-'}</td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+
+  // Inject into modal preview and print container
+  document.getElementById('executive-preview-body').innerHTML = reportHtml;
+  document.getElementById('executive-print-container').innerHTML = reportHtml;
+
+  // Open modal
+  document.getElementById('executive-modal')?.classList.remove('hidden');
+}
+
+function closeExecutiveReportModal() {
+  document.getElementById('executive-modal')?.classList.add('hidden');
+}
+
+function triggerExecutivePrint() {
+  window.print();
+}
+
+function copyWhatsAppSummary() {
+  if (!AppState.calculationResults) {
+    alert('No data available to share.');
+    return;
+  }
+
+  const res = AppState.calculationResults;
+  const m = res.month === 'ALL' ? 'Total Summary' : res.month;
+
+  const topBranches = Object.values(res.consolidatedBranches)
+    .sort((a, b) => b.netProfit - a.netProfit)
+    .slice(0, 4)
+    .map((b, i) => `${i + 1}. ${b.branchName.replace('Grace Laboratory', 'GL').replace('(Consolidated)', '')}: ${formatCurrency(b.netProfit)} (${b.profitPct.toFixed(1)}%)`)
+    .join('\n');
+
+  const topDocs = res.doctorList
+    .slice(0, 4)
+    .map((d, i) => `${i + 1}. ${d.doctorName}: ${formatCurrency(d.totalReceived)} (Cut: ${formatCurrency(d.totalCutAmount)})`)
+    .join('\n');
+
+  const text = `🏥 *GRACE MEDICAL SERVICES - P&L SUMMARY*\n` +
+    `📅 *Period*: ${m}\n` +
+    `━━━━━━━━━━━━━━━━━━━━━━\n` +
+    `💰 *Total Revenue*: ${formatCurrency(res.totals.received)}\n` +
+    `📉 *Total Expenses*: ${formatCurrency(res.totals.totalExpense)}\n` +
+    `   • Doctor Referral Cuts: ${formatCurrency(res.totals.docCut)} (${res.totals.received > 0 ? ((res.totals.docCut/res.totals.received)*100).toFixed(1) : 0}%)\n` +
+    `   • Fixed Overheads: ${formatCurrency(res.totals.fixed)} (${res.totals.received > 0 ? ((res.totals.fixed/res.totals.received)*100).toFixed(1) : 0}%)\n` +
+    `   • Reagents: ${formatCurrency(res.totals.reagent)} (${res.totals.received > 0 ? ((res.totals.reagent/res.totals.received)*100).toFixed(1) : 0}%)\n` +
+    `   • Stationary: ${formatCurrency(res.totals.stationary)} (1.0%)\n` +
+    `━━━━━━━━━━━━━━━━━━━━━━\n` +
+    `💵 *Net Operating Profit*: ${formatCurrency(res.totals.netProfit)}\n` +
+    `📊 *Profit Margin*: ${res.totals.profitPct.toFixed(1)}%\n` +
+    `⏳ *Pending Receivables (Due)*: ${formatCurrency(res.totals.due)}\n` +
+    `━━━━━━━━━━━━━━━━━━━━━━\n` +
+    `🏆 *Top Branches by Profit*:\n${topBranches}\n` +
+    `━━━━━━━━━━━━━━━━━━━━━━\n` +
+    `👨‍⚕️ *Top Referring Doctors*:\n${topDocs}\n` +
+    `━━━━━━━━━━━━━━━━━━━━━━\n` +
+    `Generated via Grace Lab Portal`;
+
+  if (navigator.clipboard) {
+    navigator.clipboard.writeText(text).then(() => {
+      showToast('Copied Executive WhatsApp Summary to Clipboard!');
+    }).catch(() => {
+      prompt('Copy your summary below:', text);
+    });
+  } else {
+    prompt('Copy your summary below:', text);
+  }
+}

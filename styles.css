@@ -29,24 +29,82 @@ code, .font-mono {
   background: #94a3b8;
 }
 
+/* ============================================================
+   EXECUTIVE PDF & PRINT STYLESHEET (A4 Multi-Page Layout)
+   ============================================================ */
+
 @media print {
-  header, nav, #unmatched-alert-banner, .no-print, #history-modal {
+  /* Set standard A4 with clean margins */
+  @page {
+    size: A4 portrait;
+    margin: 12mm 15mm;
+  }
+
+  /* Force browsers to print exact background colors and badge borders */
+  * {
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+
+  /* Hide interactive web elements */
+  header, nav, footer, #unmatched-alert-banner, .no-print, #history-modal, .tab-content, #toast {
     display: none !important;
   }
+
   body {
-    background: white;
-    color: black;
+    background: #ffffff !important;
+    color: #0f172a !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    font-size: 11pt !important;
   }
-  .tab-content {
+
+  /* Show ONLY the Executive Print Report */
+  #executive-print-container {
     display: block !important;
+    width: 100% !important;
+    margin: 0 !important;
+    padding: 0 !important;
   }
-  .overflow-x-auto {
-    overflow-x: visible !important;
+
+  /* Page break utilities */
+  .print-page {
+    page-break-after: always !important;
+    break-after: page !important;
+    min-height: 95vh;
+    padding-bottom: 20px;
+    box-sizing: border-box;
   }
-  #tab-pl-sheet {
-    display: block !important;
+
+  .print-page:last-child {
+    page-break-after: auto !important;
+    break-after: auto !important;
   }
-  #tab-dashboard, #tab-branches, #tab-doctors, #tab-monthly, #tab-expense-settings, #tab-doctor-master {
-    display: none !important;
+
+  .print-page-break-inside-avoid {
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
   }
+
+  /* High contrast table borders for clean printing */
+  table {
+    border-collapse: collapse !important;
+    width: 100% !important;
+  }
+
+  th, td {
+    border: 1px solid #cbd5e1 !important;
+    padding: 6px 8px !important;
+  }
+
+  th {
+    background-color: #f1f5f9 !important;
+    color: #0f172a !important;
+    font-weight: 700 !important;
+  }
+}
+
+/* Screen default: hide print report on screen */
+#executive-print-container {
+  display: none;
 }
