@@ -1,84 +1,168 @@
 /**
  * Grace Laboratory - Revenue & Profit/Loss Calculation Engine & Portal
  * Standalone Client-Side Application for GitHub Pages
+ * Features: Multi-Month IndexedDB Storage, Beautiful Excel Export, Fuzzy Matcher
  */
 
-// State Management
 var AppState = window.AppState = {
   doctorCuts: {},
   branchExpenses: {},
   makarpuraSubUnits: [],
   expenseHeads: [],
-  rawBills: [],
-  parsedBills: [],
-  months: [],
-  selectedMonth: 'ALL', // 'ALL' or specific month string like 'October 2026'
+  parsedBills: [], // All active records across all months
+  months: [],      // Array of distinct loaded months e.g. ['September 2026', 'October 2026']
+  selectedMonth: 'ALL',
   unmatchedDoctors: [],
   calculationResults: null,
   charts: {}
 };
 
 // ==========================================
-// 1. INITIALIZATION & LOCAL STORAGE
+// 1. INDEXEDDB PERSISTENCE (Multi-Month Storage)
 // ==========================================
 
-function initApp() {
-  // Load Doctor Cuts from LocalStorage or Defaults
-  const savedCuts = localStorage.getItem('grace_dr_cuts');
-  if (savedCuts) {
-    try {
-      AppState.doctorCuts = JSON.parse(savedCuts);
-    } catch (e) {
-      AppState.doctorCuts = { ...DEFAULT_DOCTOR_CUTS };
-    }
-  } else {
-    AppState.doctorCuts = { ...DEFAULT_DOCTOR_CUTS };
-  }
+const LabStorage = {
+  dbName: 'GraceLabPortalDB',
+  version: 1,
+  db: null,
 
-  // Load Branch Expenses from LocalStorage or Defaults
-  const savedExpenses = localStorage.getItem('grace_branch_expenses');
-  if (savedExpenses) {
-    try {
-      AppState.branchExpenses = JSON.parse(savedExpenses);
-    } catch (e) {
-      AppState.branchExpenses = JSON.parse(JSON.stringify(DEFAULT_BRANCH_EXPENSES));
-    }
-  } else {
-    AppState.branchExpenses = JSON.parse(JSON.stringify(DEFAULT_BRANCH_EXPENSES));
+  init() {
+    return new Promise((resolve) => {
+      if (!window.indexedDB) {
+        console.warn('IndexedDB not supported; using memory storage.');
+        return resolve(null);
+      }
+      const req = indexedDB.open(this.dbName, this.version);
+      req.onupgradeneeded = (e) => {
+        const db = e.target.result;
+        if (!db.objectStoreNames.contains('monthly_bills')) {
+          db.createObjectStore('monthly_bills', { keyPath: 'month' });
+        }
+      };
+      req.onsuccess = (e) => {
+        this.db = e.target.result;
+        resolve(this.db);
+      };
+      req.onerror = () => resolve(null);
+    });
+  },
+
+  saveMonthData(monthLabel, bills) {
+    return new Promise((resolve) => {
+      if (!this.db) return resolve(false);
+      try {
+        const tx = this.db.transaction('monthly_bills', 'readwrite');
+        const store = tx.objectStore('monthly_bills');
+        store.put({ month: monthLabel, updated: new Date().toISOString(), bills: bills });
+        tx.oncomplete = () => resolve(true);
+        tx.onerror = () => resolve(false);
+      } catch (e) {
+        resolve(false);
+      }
+    });
+  },
+
+  getAllMonthsData() {
+    return new Promise((resolve) => {
+      if (!this.db) return resolve([]);
+      try {
+        const tx = this.db.transaction('monthly_bills', 'readonly');
+        const store = tx.objectStore('monthly_bills');
+        const req = store.getAll();
+        req.onsuccess = () => resolve(req.result || []);
+        req.onerror = () => resolve([]);
+      } catch (e) {
+        resolve([]);
+      }
+    });
+  },
+
+  deleteMonth(monthLabel) {
+    return new Promise((resolve) => {
+      if (!this.db) return resolve(false);
+      try {
+        const tx = this.db.transaction('monthly_bills', 'readwrite');
+        const store = tx.objectStore('monthly_bills');
+        store.delete(monthLabel);
+        tx.oncomplete = () => resolve(true);
+        tx.onerror = () => resolve(false);
+      } catch (e) {
+        resolve(false);
+      }
+    });
+  },
+
+  clearAllData() {
+    return new Promise((resolve) => {
+      if (!this.db) return resolve(false);
+      try {
+        const tx = this.db.transaction('monthly_bills', 'readwrite');
+        const store = tx.objectStore('monthly_bills');
+        store.clear();
+        tx.oncomplete = () => resolve(true);
+        tx.onerror = () => resolve(false);
+      } catch (e) {
+        resolve(false);
+      }
+    });
   }
+};
+
+// ==========================================
+// 2. INITIALIZATION
+// ==========================================
+
+async function initApp() {
+  const savedCuts = localStorage.getItem('grace_dr_cuts');
+  AppState.doctorCuts = savedCuts ? JSON.parse(savedCuts) : { ...DEFAULT_DOCTOR_CUTS };
+
+  const savedExpenses = localStorage.getItem('grace_branch_expenses');
+  AppState.branchExpenses = savedExpenses ? JSON.parse(savedExpenses) : JSON.parse(JSON.stringify(DEFAULT_BRANCH_EXPENSES));
 
   AppState.makarpuraSubUnits = [...MAKARPURA_SUB_UNITS];
   AppState.expenseHeads = [...EXPENSE_HEAD_DEFINITIONS];
 
-  // Setup Event Listeners
   setupEventListeners();
-
-  // Render Doctor Master Table & Expense Settings
   renderDoctorMasterTable();
   renderExpenseSettingsTable();
 
-  // Check if sample data is available
-  if (typeof SAMPLE_BILLS_DATA !== 'undefined' && SAMPLE_BILLS_DATA.length > 0) {
-    // Show sample data ready notification
-    console.log('Sample data available:', SAMPLE_BILLS_DATA.length, 'records');
+  // Initialize IndexedDB and load stored months
+  await LabStorage.init();
+  const storedMonths = await LabStorage.getAllMonthsData();
+
+  if (storedMonths && storedMonths.length > 0) {
+    let combinedBills = [];
+    let monthsList = [];
+    storedMonths.forEach(mObj => {
+      monthsList.push(mObj.month);
+      combinedBills = combinedBills.concat(mObj.bills);
+    });
+
+    AppState.parsedBills = combinedBills;
+    AppState.months = monthsList;
+    AppState.selectedMonth = monthsList[monthsList.length - 1]; // Default to latest month
+    updateMonthSelector();
+    calculateAndRender();
+    renderHistoryModal();
+    console.log(`Loaded ${storedMonths.length} stored month(s) from database!`);
+  } else if (typeof SAMPLE_BILLS_DATA !== 'undefined' && SAMPLE_BILLS_DATA.length > 0) {
+    loadSampleData();
   }
 }
 
 // ==========================================
-// 2. DOCTOR NAME NORMALIZATION & MATCHING
+// 3. DOCTOR NAME NORMALIZATION & MATCHING
 // ==========================================
 
 function cleanDoctorName(name) {
   if (!name) return '';
   let s = String(name).trim();
-  // Strip doctor prefixes
   s = s.replace(/^(Dr\.|Dr\s+|DR\.|DR\s+|Doctor\s+)/i, '').trim();
-  // Collapse multiple spaces
+  s = s.replace(/[.\s-]+$/, '').trim();
   s = s.replace(/\s+/g, ' ');
   return s;
 }
 
-// Levenshtein distance for fuzzy matching
 function levenshteinDistance(a, b) {
   const matrix = [];
   for (let i = 0; i <= b.length; i++) matrix[i] = [i];
@@ -90,9 +174,9 @@ function levenshteinDistance(a, b) {
         matrix[i][j] = matrix[i - 1][j - 1];
       } else {
         matrix[i][j] = Math.min(
-          matrix[i - 1][j - 1] + 1, // substitution
-          matrix[i][j - 1] + 1,     // insertion
-          matrix[i - 1][j] + 1      // deletion
+          matrix[i - 1][j - 1] + 1,
+          matrix[i][j - 1] + 1,
+          matrix[i - 1][j] + 1
         );
       }
     }
@@ -100,85 +184,62 @@ function levenshteinDistance(a, b) {
   return matrix[b.length][a.length];
 }
 
-function stringSimilarity(s1, s2) {
-  const longer = s1.length > s2.length ? s1 : s2;
-  const shorter = s1.length > s2.length ? s2 : s1;
-  if (longer.length === 0) return 1.0;
-  const dist = levenshteinDistance(longer, shorter);
-  return (longer.length - dist) / parseFloat(longer.length);
-}
-
 function matchDoctor(docName) {
   if (!docName || String(docName).trim().toUpperCase() === 'SELF') {
-    return {
-      matchedName: 'SELF',
-      percentage: 0,
-      matchType: 'SELF',
-      confidence: 1.0
-    };
+    return { matchedName: 'SELF', percentage: 0, matchType: 'SELF', confidence: 1.0 };
   }
 
   const cleaned = cleanDoctorName(docName);
   const cleanedLower = cleaned.toLowerCase();
 
-  // 1. Direct exact or case-insensitive match in dictionary
+  // 1. Exact Match
   for (const [masterDoc, pct] of Object.entries(AppState.doctorCuts)) {
     if (masterDoc.toLowerCase() === docName.toLowerCase() || masterDoc.toLowerCase() === cleanedLower) {
-      return {
-        matchedName: masterDoc,
-        percentage: Number(pct),
-        matchType: 'EXACT',
-        confidence: 1.0
-      };
+      return { matchedName: masterDoc, percentage: Number(pct), matchType: 'EXACT', confidence: 1.0 };
     }
     const cleanMaster = cleanDoctorName(masterDoc).toLowerCase();
     if (cleanMaster === cleanedLower) {
-      return {
-        matchedName: masterDoc,
-        percentage: Number(pct),
-        matchType: 'EXACT_CLEAN',
-        confidence: 0.98
-      };
+      return { matchedName: masterDoc, percentage: Number(pct), matchType: 'EXACT_CLEAN', confidence: 0.98 };
     }
   }
 
-  // 2. Strip parentheses e.g. "Dr. MIHIR PATEL (MADHAV CLINIC)" -> "Mihir Patel"
-  const strippedParen = cleaned.replace(/\(.*?\)/g, '').trim().toLowerCase();
+  // 2. Strip Parentheses
+  const strippedParen = cleanedLower.replace(/\(.*?\)/g, '').trim().replace(/[.\s-]+$/, '');
   if (strippedParen && strippedParen !== cleanedLower) {
     for (const [masterDoc, pct] of Object.entries(AppState.doctorCuts)) {
-      const cleanMaster = cleanDoctorName(masterDoc).toLowerCase();
-      if (cleanMaster === strippedParen) {
-        return {
-          matchedName: masterDoc,
-          percentage: Number(pct),
-          matchType: 'STRIPPED_PAREN',
-          confidence: 0.95
-        };
+      if (cleanDoctorName(masterDoc).toLowerCase() === strippedParen) {
+        return { matchedName: masterDoc, percentage: Number(pct), matchType: 'STRIPPED_PAREN', confidence: 0.95 };
       }
     }
   }
 
-  // 3. Strip punctuation and spaces e.g. "C.M.CHOTALIYA" -> "cmchotaliya"
-  const alphaNumericClean = cleanedLower.replace(/[^a-z0-9]/g, '');
-  for (const [masterDoc, pct] of Object.entries(AppState.doctorCuts)) {
-    const cleanMaster = cleanDoctorName(masterDoc).toLowerCase().replace(/[^a-z0-9]/g, '');
-    if (cleanMaster === alphaNumericClean) {
-      return {
-        matchedName: masterDoc,
-        percentage: Number(pct),
-        matchType: 'STRIPPED_PUNCT',
-        confidence: 0.92
-      };
+  // 3. Strip Middle Initials (e.g. 'Umang C Joshi' -> 'Umang Joshi')
+  const strippedInitials = strippedParen.replace(/\s+[a-z]\.?\s+/g, ' ').trim();
+  if (strippedInitials && strippedInitials !== strippedParen) {
+    for (const [masterDoc, pct] of Object.entries(AppState.doctorCuts)) {
+      if (cleanDoctorName(masterDoc).toLowerCase() === strippedInitials) {
+        return { matchedName: masterDoc, percentage: Number(pct), matchType: 'STRIPPED_INITIAL', confidence: 0.95 };
+      }
     }
   }
 
-  // 4. Fuzzy Matching with Levenshtein distance
+  // 4. Strip Punctuation
+  const alphaNumericClean = cleanedLower.replace(/[^a-z0-9]/g, '');
+  for (const [masterDoc, pct] of Object.entries(AppState.doctorCuts)) {
+    if (cleanDoctorName(masterDoc).toLowerCase().replace(/[^a-z0-9]/g, '') === alphaNumericClean) {
+      return { matchedName: masterDoc, percentage: Number(pct), matchType: 'STRIPPED_PUNCT', confidence: 0.92 };
+    }
+  }
+
+  // 5. Fuzzy Match with Levenshtein Distance
   let bestMatch = null;
   let bestScore = 0;
-
   for (const [masterDoc, pct] of Object.entries(AppState.doctorCuts)) {
     const cleanMaster = cleanDoctorName(masterDoc).toLowerCase();
-    const score = stringSimilarity(cleanedLower, cleanMaster);
+    const longer = Math.max(cleanedLower.length, cleanMaster.length);
+    if (longer === 0) continue;
+    const dist = levenshteinDistance(cleanedLower, cleanMaster);
+    const score = (longer - dist) / parseFloat(longer);
     if (score > bestScore) {
       bestScore = score;
       bestMatch = { masterDoc, pct, score };
@@ -189,93 +250,84 @@ function matchDoctor(docName) {
     return {
       matchedName: bestMatch.masterDoc,
       percentage: Number(bestMatch.pct),
-      matchType: `FUZZY (${Math.round(bestScore * 100)}%)`,
+      matchType: 'FUZZY (' + Math.round(bestScore * 100) + '%)',
       confidence: bestScore
     };
   }
 
-  // 5. Unmatched Doctor: Fallback to Self (0%) as requested by user
-  return {
-    matchedName: docName,
-    percentage: 0,
-    matchType: 'UNMATCHED (0% fallback)',
-    confidence: 0.0
-  };
+  return { matchedName: docName, percentage: 0, matchType: 'UNMATCHED (0% fallback)', confidence: 0.0 };
 }
 
 // ==========================================
-// 3. EXCEL EXTRACTION (SheetJS)
+// 4. EXCEL EXTRACTION & MULTI-MONTH MERGING
 // ==========================================
 
 function handleFileUpload(file) {
   const reader = new FileReader();
-  reader.onload = function(e) {
+  reader.onload = async function(e) {
     const data = new Uint8Array(e.target.result);
     const workbook = XLSX.read(data, { type: 'array', cellDates: true });
-
-    const firstSheetName = workbook.SheetNames[0];
-    const worksheet = workbook.Sheets[firstSheetName];
-    
-    // Parse to JSON array of arrays
-    const rawRows = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: '' });
-    processExtractedRows(rawRows, file.name);
+    const rawRows = XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]], { header: 1, defval: '' });
+    await processExtractedRows(rawRows, file.name);
   };
   reader.readAsArrayBuffer(file);
 }
 
-function processExtractedRows(rawRows, fileName) {
-  // Find Header Row: look for 'Branch' and 'Consulting Doctor Name'
+async function processExtractedRows(rawRows, fileName) {
   let headerIndex = -1;
-  let colMap = {
-    branch: -1,
-    doctor: -1,
-    received: -1,
-    due: -1,
-    date: -1
-  };
+  let colMap = { branch: -1, doctor: -1, received: -1, due: -1, date: -1 };
 
-  for (let r = 0; r < Math.min(rawRows.length, 25); r++) {
+  for (let r = 0; r < Math.min(rawRows.length, 30); r++) {
     const row = rawRows[r];
-    for (let c = 0; c < row.length; c++) {
-      const cellVal = String(row[c] || '').trim().toLowerCase();
-      if (cellVal === 'branch') colMap.branch = c;
-      if (cellVal.includes('consulting doctor') || cellVal === 'doctor' || cellVal.includes('doctor name')) colMap.doctor = c;
-      if (cellVal.includes('received amount') || cellVal === 'recieved amount' || cellVal === 'received') colMap.received = c;
-      if (cellVal.includes('due amount') || cellVal === 'due') colMap.due = c;
-      if (cellVal.includes('registration date') || cellVal === 'date' || cellVal.includes('reg date')) colMap.date = c;
-    }
+    const rowStr = row.map(cell => String(cell || '').trim().toLowerCase());
+    
+    const hasBranch = rowStr.includes('branch');
+    const hasDocName = rowStr.some(v => v === 'consulting doctor name' || v.includes('consulting doctor name') || v === 'doctor name');
+    const hasReceived = rowStr.some(v => v === 'received amount' || v === 'recieved amount' || v.includes('received amount'));
 
-    if (colMap.branch !== -1 && (colMap.doctor !== -1 || colMap.received !== -1)) {
+    if (hasBranch && (hasDocName || hasReceived)) {
       headerIndex = r;
+      for (let c = 0; c < row.length; c++) {
+        const v = rowStr[c];
+        if (v === 'branch') {
+          colMap.branch = c;
+        } else if (v === 'consulting doctor name' || v.includes('consulting doctor name') || v === 'doctor name') {
+          colMap.doctor = c; // Specifically targets Column Y, never Sales Person!
+        } else if (colMap.doctor === -1 && (v.includes('consulting doctor') || v === 'doctor') && !v.includes('code') && !v.includes('sales') && !v.includes('id') && !v.includes('fee')) {
+          colMap.doctor = c;
+        } else if (v === 'received amount' || v === 'recieved amount' || (v.includes('received') && !v.includes('due'))) {
+          colMap.received = c;
+        } else if (v === 'due amount' || (v.includes('due') && !v.includes('show') && !v.includes('credit'))) {
+          colMap.due = c;
+        } else if (v === 'registration date' || (v.startsWith('registration date') && !v.includes('time'))) {
+          colMap.date = c;
+        }
+      }
       break;
     }
   }
 
-  // Fallback defaults if header search was partially matched
-  if (colMap.branch === -1) colMap.branch = 0; // Col A
-  if (colMap.doctor === -1) colMap.doctor = 24; // Col Y
-  if (colMap.received === -1) colMap.received = 37; // Col AL
-  if (colMap.due === -1) colMap.due = 38; // Col AM
-  if (colMap.date === -1) colMap.date = 4; // Col E
+  if (colMap.branch === -1) colMap.branch = 0;
+  if (colMap.doctor === -1) colMap.doctor = 24;
+  if (colMap.received === -1) colMap.received = 37;
+  if (colMap.due === -1) colMap.due = 38;
+  if (colMap.date === -1) colMap.date = 4;
+  if (headerIndex === -1) headerIndex = 8;
 
-  if (headerIndex === -1) headerIndex = 8; // Row 9 (0-indexed 8) in BillRegister
-
-  const parsed = [];
-  const unmatched = new Map();
-  const monthsFound = new Set();
+  const newParsed = [];
+  const monthBuckets = {};
 
   for (let r = headerIndex + 1; r < rawRows.length; r++) {
     const row = rawRows[r];
     const branchVal = String(row[colMap.branch] || '').trim();
-    if (!branchVal || branchVal.toLowerCase() === 'total' || branchVal === '') continue;
+    if (!branchVal || branchVal.toLowerCase() === 'total') continue;
 
     const docVal = String(row[colMap.doctor] || '').trim();
     const recVal = parseFloat(row[colMap.received]) || 0;
     const dueVal = parseFloat(row[colMap.due]) || 0;
     
-    // Date parsing & month extraction
     let rawDate = row[colMap.date];
-    let monthLabel = 'October 2026'; // fallback default
+    let monthLabel = 'September 2026';
 
     if (rawDate instanceof Date) {
       const monthNames = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
@@ -283,32 +335,23 @@ function processExtractedRows(rawRows, fileName) {
     } else if (typeof rawDate === 'string' && rawDate.trim()) {
       const match = rawDate.match(/(\d{1,2})[-/ ]([A-Za-z]{3,9})[-/ ](\d{2,4})/);
       if (match) {
-        monthLabel = `${match[2]} ${match[3]}`;
+        const mPart = match[2].toLowerCase();
+        let fullYear = match[3];
+        if (fullYear.length === 2) fullYear = '20' + fullYear;
+        const mLookup = {
+          'jan': 'January', 'feb': 'February', 'mar': 'March', 'apr': 'April',
+          'may': 'May', 'jun': 'June', 'jul': 'July', 'aug': 'August',
+          'sep': 'September', 'oct': 'October', 'nov': 'November', 'dec': 'December'
+        };
+        const mFull = mLookup[mPart.substring(0, 3)] || match[2];
+        monthLabel = `${mFull} ${fullYear}`;
       } else {
         monthLabel = rawDate.trim();
       }
     }
 
-    monthsFound.add(monthLabel);
-
-    // Doctor matching
     const matchResult = matchDoctor(docVal);
-    if (matchResult.matchType.startsWith('UNMATCHED') && docVal.toUpperCase() !== 'SELF' && docVal !== '') {
-      if (!unmatched.has(docVal)) {
-        unmatched.set(docVal, {
-          doctorName: docVal,
-          branch: branchVal,
-          count: 1,
-          totalReceived: recVal
-        });
-      } else {
-        const item = unmatched.get(docVal);
-        item.count++;
-        item.totalReceived += recVal;
-      }
-    }
-
-    parsed.push({
+    const billRecord = {
       rowId: r + 1,
       branch: branchVal,
       doctor: docVal || 'SELF',
@@ -319,107 +362,97 @@ function processExtractedRows(rawRows, fileName) {
       due: dueVal,
       date: rawDate,
       month: monthLabel
-    });
+    };
+
+    newParsed.push(billRecord);
+
+    if (!monthBuckets[monthLabel]) monthBuckets[monthLabel] = [];
+    monthBuckets[monthLabel].push(billRecord);
   }
 
-  AppState.parsedBills = parsed;
-  AppState.months = Array.from(monthsFound);
+  // Save new month(s) into IndexedDB
+  for (const [mName, bills] of Object.entries(monthBuckets)) {
+    await LabStorage.saveMonthData(mName, bills);
+    if (!AppState.months.includes(mName)) {
+      AppState.months.push(mName);
+    }
+    // Update memory: replace previous bills for that specific month and append
+    AppState.parsedBills = AppState.parsedBills.filter(b => b.month !== mName).concat(bills);
+  }
+
+  // Update unmatched doctor list
+  const unmatched = new Map();
+  AppState.parsedBills.forEach(b => {
+    if (b.doctorCutPct === 0 && b.doctor.toUpperCase() !== 'SELF' && b.doctor !== '') {
+      if (!unmatched.has(b.doctor)) {
+        unmatched.set(b.doctor, { doctorName: b.doctor, branch: b.branch, count: 1, totalReceived: b.received });
+      } else {
+        const item = unmatched.get(b.doctor);
+        item.count++;
+        item.totalReceived += b.received;
+      }
+    }
+  });
   AppState.unmatchedDoctors = Array.from(unmatched.values());
-  if (AppState.months.length > 0) {
-    AppState.selectedMonth = AppState.months[0];
+
+  const uploadedMonths = Object.keys(monthBuckets);
+  if (uploadedMonths.length > 0) {
+    AppState.selectedMonth = uploadedMonths[0];
   }
 
-  // Update UI Elements
   updateMonthSelector();
   renderUnmatchedDoctorsAlert();
   calculateAndRender();
+  renderHistoryModal();
 
-  // Show Success Toast
-  showToast(`Successfully imported ${parsed.length} rows from "${fileName}" across ${AppState.months.length} month(s).`);
+  showToast(`Successfully saved ${newParsed.length} bills for ${uploadedMonths.join(', ')} to your browser history!`);
 }
 
 function loadSampleData() {
-  if (typeof SAMPLE_BILLS_DATA === 'undefined') {
-    alert('Sample data file not loaded.');
-    return;
-  }
+  if (typeof SAMPLE_BILLS_DATA === 'undefined') return;
 
-  const parsed = [];
-  const unmatched = new Map();
-  const monthsFound = new Set();
-
-  SAMPLE_BILLS_DATA.forEach((b, idx) => {
-    const branchVal = b.branch;
-    const docVal = b.doctor;
-    const recVal = Number(b.received) || 0;
-    const dueVal = Number(b.due) || 0;
-    const monthLabel = 'October 2026';
-    monthsFound.add(monthLabel);
-
-    const matchResult = matchDoctor(docVal);
-    if (matchResult.matchType.startsWith('UNMATCHED') && docVal.toUpperCase() !== 'SELF' && docVal !== '') {
-      if (!unmatched.has(docVal)) {
-        unmatched.set(docVal, {
-          doctorName: docVal,
-          branch: branchVal,
-          count: 1,
-          totalReceived: recVal
-        });
-      } else {
-        const item = unmatched.get(docVal);
-        item.count++;
-        item.totalReceived += recVal;
-      }
-    }
-
-    parsed.push({
+  const monthLabel = 'October 2026';
+  const parsed = SAMPLE_BILLS_DATA.map((b, idx) => {
+    const matchResult = matchDoctor(b.doctor);
+    return {
       rowId: idx + 1,
-      branch: branchVal,
-      doctor: docVal || 'SELF',
+      branch: b.branch,
+      doctor: b.doctor || 'SELF',
       matchedDoctor: matchResult.matchedName,
       doctorCutPct: matchResult.percentage,
       matchType: matchResult.matchType,
-      received: recVal,
-      due: dueVal,
+      received: Number(b.received) || 0,
+      due: Number(b.due) || 0,
       date: b.date,
       month: monthLabel
-    });
+    };
   });
 
   AppState.parsedBills = parsed;
-  AppState.months = Array.from(monthsFound);
-  AppState.unmatchedDoctors = Array.from(unmatched.values());
-  AppState.selectedMonth = AppState.months[0];
+  AppState.months = [monthLabel];
+  AppState.selectedMonth = monthLabel;
 
   updateMonthSelector();
   renderUnmatchedDoctorsAlert();
   calculateAndRender();
-
-  showToast(`Loaded ${parsed.length} transactions from BillRegister_ShortTestName_09Oct2026092721.xlsx sample data!`);
 }
 
 // ==========================================
-// 4. CALCULATION ENGINE
+// 5. CALCULATION ENGINE
 // ==========================================
 
 function runCalculations(targetMonth) {
-  // Filter bills by month if specified
   const bills = (targetMonth === 'ALL')
     ? AppState.parsedBills
     : AppState.parsedBills.filter(b => b.month === targetMonth);
 
-  // Define All Branches & Columns from Default Template
   const branchMap = {};
-  
-  // Initialize standard branches from AppState.branchExpenses
   for (const [colLetter, colData] of Object.entries(AppState.branchExpenses)) {
-    const bName = colData.branch_name;
-    if (!bName) continue;
-    
+    if (!colData.branch_name) continue;
     branchMap[colLetter] = {
       col: colLetter,
       colIndex: colData.col_index,
-      branchName: bName,
+      branchName: colData.branch_name,
       subHeading: colData.sub_heading,
       fixedExpenses: { ...colData.expenses },
       totalFixed: colData.total_monthly_fixed,
@@ -432,63 +465,38 @@ function runCalculations(targetMonth) {
       totalExpense: 0,
       netProfit: 0,
       profitPct: 0,
-      stationaryRate: 0.01, // default 1%
-      reagentRate: (colLetter === 'AC') ? 0.15 : 0.125, reagentRate: (colLetter === 'AC') ? 0.15 : 0.125,
+      stationaryRate: 0.01,
+      reagentRate: (colLetter === 'AC') ? 0.15 : 0.125,
       customCutPct: (colLetter === 'AH') ? 30 : undefined,
       transactions: [],
       doctorBreakdown: {}
     };
   }
 
-  // Ensure Makarpura Testing Unit (Col AQ) has fixed expenses even if no revenue
   if (!branchMap['AQ'] && AppState.branchExpenses['AQ']) {
     branchMap['AQ'] = {
-      col: 'AQ',
-      colIndex: 43,
-      branchName: 'makarpura testing unit',
-      subHeading: 'Central Testing Unit',
-      fixedExpenses: { ...AppState.branchExpenses['AQ'].expenses },
-      totalFixed: AppState.branchExpenses['AQ'].total_monthly_fixed,
-      received: 0,
-      due: 0,
-      docCutAmount: 0,
-      balanceRevenue: 0,
-      stationaryAmount: 0,
-      reagentAmount: 0,
-      totalExpense: AppState.branchExpenses['AQ'].total_monthly_fixed,
-      netProfit: -AppState.branchExpenses['AQ'].total_monthly_fixed,
-      profitPct: 0,
-      stationaryRate: 0.01,
-      reagentRate: 0.125,
-      transactions: [],
-      doctorBreakdown: {}
+      col: 'AQ', colIndex: 43, branchName: 'makarpura testing unit', subHeading: 'Central Testing Unit',
+      fixedExpenses: { ...AppState.branchExpenses['AQ'].expenses }, totalFixed: AppState.branchExpenses['AQ'].total_monthly_fixed,
+      received: 0, due: 0, docCutAmount: 0, balanceRevenue: 0, stationaryAmount: 0, reagentAmount: 0,
+      totalExpense: AppState.branchExpenses['AQ'].total_monthly_fixed, netProfit: -AppState.branchExpenses['AQ'].total_monthly_fixed,
+      profitPct: 0, stationaryRate: 0.01, reagentRate: 0.125, transactions: [], doctorBreakdown: {}
     };
   }
 
-  // Process Bills into Branches and Sub-Units
   bills.forEach(bill => {
     let targetCol = null;
     const bName = bill.branch.trim();
     const docName = bill.doctor.trim();
 
-    // Check if it belongs to '29- Makarpura Grace laboratory'
     if (bName.toLowerCase().includes('makarpura')) {
-      // Check for High Volume Doctors / Sub-units
-      let isSubUnit = false;
       for (const sub of AppState.makarpuraSubUnits) {
         if (sub.doctorMatch.some(dm => cleanDoctorName(dm).toLowerCase() === cleanDoctorName(docName).toLowerCase())) {
           targetCol = sub.fixedExpenseCol;
-          isSubUnit = true;
           break;
         }
       }
-
-      if (!isSubUnit) {
-        // Fall into General 29- Makarpura pool (Col R)
-        targetCol = 'R';
-      }
+      if (!targetCol) targetCol = 'R';
     } else {
-      // Find matching branch column by branch name
       for (const [colLetter, bObj] of Object.entries(branchMap)) {
         if (bObj.branchName && (
           bObj.branchName.toLowerCase().includes(bName.toLowerCase()) ||
@@ -500,37 +508,20 @@ function runCalculations(targetMonth) {
       }
     }
 
-    // If still no direct match, check if there's an existing branch key
     if (!targetCol) {
-      // Find first column matching branch
       const match = Object.keys(branchMap).find(k => branchMap[k].branchName.toLowerCase() === bName.toLowerCase());
       if (match) targetCol = match;
     }
 
-    // If branch doesn't exist in template, create a dynamic entry
     if (!targetCol) {
       targetCol = 'DYNAMIC_' + bName.replace(/[^a-zA-Z0-9]/g, '_');
       if (!branchMap[targetCol]) {
         branchMap[targetCol] = {
-          col: targetCol,
-          colIndex: 999,
-          branchName: bName,
-          subHeading: 'Dynamic Branch',
-          fixedExpenses: {},
-          totalFixed: 0,
-          received: 0,
-          due: 0,
-          docCutAmount: 0,
-          balanceRevenue: 0,
-          stationaryAmount: 0,
-          reagentAmount: 0,
-          totalExpense: 0,
-          netProfit: 0,
-          profitPct: 0,
-          stationaryRate: 0.01,
-          reagentRate: 0.125,
-          transactions: [],
-          doctorBreakdown: {}
+          col: targetCol, colIndex: 999, branchName: bName, subHeading: 'Branch',
+          fixedExpenses: {}, totalFixed: 0, received: 0, due: 0, docCutAmount: 0,
+          balanceRevenue: 0, stationaryAmount: 0, reagentAmount: 0, totalExpense: 0,
+          netProfit: 0, profitPct: 0, stationaryRate: 0.01, reagentRate: 0.125,
+          transactions: [], doctorBreakdown: {}
         };
       }
     }
@@ -541,26 +532,16 @@ function runCalculations(targetMonth) {
       targetBranch.due += bill.due;
       targetBranch.transactions.push(bill);
 
-      // Re-evaluate doctor cut percentage using active AppState.doctorCuts
       const mResult = matchDoctor(bill.doctor);
-      let cutPct = mResult.percentage;
-      if (targetBranch.customCutPct !== undefined) {
-        cutPct = targetBranch.customCutPct;
-      }
+      let cutPct = (targetBranch.customCutPct !== undefined) ? targetBranch.customCutPct : mResult.percentage;
       const cutAmt = bill.received * (cutPct / 100);
       targetBranch.docCutAmount += cutAmt;
 
-      // Doctor breakdown
       const docKey = bill.doctor;
       if (!targetBranch.doctorBreakdown[docKey]) {
         targetBranch.doctorBreakdown[docKey] = {
-          doctorName: docKey,
-          matchedName: mResult.matchedName,
-          percentage: cutPct,
-          received: 0,
-          due: 0,
-          cutAmount: 0,
-          count: 0
+          doctorName: docKey, matchedName: mResult.matchedName, percentage: cutPct,
+          received: 0, due: 0, cutAmount: 0, count: 0
         };
       }
       targetBranch.doctorBreakdown[docKey].received += bill.received;
@@ -570,7 +551,6 @@ function runCalculations(targetMonth) {
     }
   });
 
-  // Finalize Branch Calculations
   let grandTotalReceived = 0;
   let grandTotalDue = 0;
   let grandTotalDocCut = 0;
@@ -581,36 +561,19 @@ function runCalculations(targetMonth) {
   let grandTotalNetProfit = 0;
 
   for (const [colLetter, bObj] of Object.entries(branchMap)) {
-    // Special Rule for Dabhoi: Salary2 is 5% of Received Amount
     if (colLetter === 'BF') {
       const dynamicSalary2 = bObj.received * 0.05;
       bObj.fixedExpenses['salary2_logistics'] = dynamicSalary2;
-      // Re-sum fixed expenses
-      let sumFixed = 0;
-      for (const [k, v] of Object.entries(bObj.fixedExpenses)) {
-        sumFixed += Number(v) || 0;
-      }
-      bObj.totalFixed = sumFixed;
+      bObj.totalFixed = Object.values(bObj.fixedExpenses).reduce((acc, v) => acc + (Number(v) || 0), 0);
     }
 
-    // Variable expenses
     bObj.balanceRevenue = bObj.received - bObj.docCutAmount;
     bObj.stationaryAmount = bObj.received * bObj.stationaryRate;
     bObj.reagentAmount = bObj.received * bObj.reagentRate;
 
-    // Total expense = Fixed + DocCut + Stationary + Reagents
-    // In template accounting: Net Profit = Balance Revenue - (Fixed + Stationary + Reagents)
-    // which equals: Received - DocCut - Fixed - Stationary - Reagents
     bObj.totalExpense = bObj.totalFixed + bObj.docCutAmount + bObj.stationaryAmount + bObj.reagentAmount;
     bObj.netProfit = bObj.received - bObj.totalExpense;
-
-    if (bObj.received > 0) {
-      bObj.profitPct = (bObj.netProfit / bObj.received) * 100;
-    } else if (bObj.totalExpense > 0) {
-      bObj.profitPct = -100; // Loss if no revenue but expenses
-    } else {
-      bObj.profitPct = 0;
-    }
+    bObj.profitPct = (bObj.received > 0) ? (bObj.netProfit / bObj.received) * 100 : (bObj.totalExpense > 0 ? -100 : 0);
 
     grandTotalReceived += bObj.received;
     grandTotalDue += bObj.due;
@@ -626,7 +589,6 @@ function runCalculations(targetMonth) {
     ? (grandTotalNetProfit / grandTotalReceived) * 100
     : 0;
 
-  // Doctor Level Rollup
   const allDoctors = {};
   bills.forEach(bill => {
     const docKey = bill.doctor;
@@ -636,14 +598,8 @@ function runCalculations(targetMonth) {
 
     if (!allDoctors[docKey]) {
       allDoctors[docKey] = {
-        doctorName: docKey,
-        matchedName: mResult.matchedName,
-        cutPct: cutPct,
-        branch: bill.branch,
-        totalReceived: 0,
-        totalDue: 0,
-        totalCutAmount: 0,
-        patientCount: 0
+        doctorName: docKey, matchedName: mResult.matchedName, cutPct: cutPct,
+        branch: bill.branch, totalReceived: 0, totalDue: 0, totalCutAmount: 0, patientCount: 0
       };
     }
     allDoctors[docKey].totalReceived += bill.received;
@@ -654,7 +610,6 @@ function runCalculations(targetMonth) {
 
   const doctorList = Object.values(allDoctors).sort((a, b) => b.totalReceived - a.totalReceived);
 
-  // Consolidated Branches (combining Makarpura sub-units for high-level branch comparison)
   const consolidated = {};
   for (const [colLetter, bObj] of Object.entries(branchMap)) {
     let mainBranchName = bObj.branchName;
@@ -664,15 +619,7 @@ function runCalculations(targetMonth) {
 
     if (!consolidated[mainBranchName]) {
       consolidated[mainBranchName] = {
-        branchName: mainBranchName,
-        received: 0,
-        due: 0,
-        docCut: 0,
-        stationary: 0,
-        reagent: 0,
-        fixed: 0,
-        totalExpense: 0,
-        netProfit: 0
+        branchName: mainBranchName, received: 0, due: 0, docCut: 0, stationary: 0, reagent: 0, fixed: 0, totalExpense: 0, netProfit: 0
       };
     }
 
@@ -692,20 +639,11 @@ function runCalculations(targetMonth) {
   }
 
   AppState.calculationResults = {
-    month: targetMonth,
-    branchMap: branchMap,
-    consolidatedBranches: consolidated,
-    doctorList: doctorList,
+    month: targetMonth, branchMap, consolidatedBranches: consolidated, doctorList,
     totals: {
-      received: grandTotalReceived,
-      due: grandTotalDue,
-      docCut: grandTotalDocCut,
-      stationary: grandTotalStationary,
-      reagent: grandTotalReagent,
-      fixed: grandTotalFixed,
-      totalExpense: grandTotalExpense,
-      netProfit: grandTotalNetProfit,
-      profitPct: grandProfitPct
+      received: grandTotalReceived, due: grandTotalDue, docCut: grandTotalDocCut,
+      stationary: grandTotalStationary, reagent: grandTotalReagent, fixed: grandTotalFixed,
+      totalExpense: grandTotalExpense, netProfit: grandTotalNetProfit, profitPct: grandProfitPct
     }
   };
 
@@ -713,13 +651,12 @@ function runCalculations(targetMonth) {
 }
 
 // ==========================================
-// 5. RENDERING & UI UPDATES
+// 6. UI RENDERING
 // ==========================================
 
 function calculateAndRender() {
   const results = runCalculations(AppState.selectedMonth);
 
-  // 1. Render Dashboard KPI Cards
   document.getElementById('kpi-revenue').innerText = formatCurrency(results.totals.received);
   document.getElementById('kpi-due').innerText = formatCurrency(results.totals.due);
   document.getElementById('kpi-fixed').innerText = formatCurrency(results.totals.fixed);
@@ -729,29 +666,16 @@ function calculateAndRender() {
   
   const netProfitEl = document.getElementById('kpi-net-profit');
   netProfitEl.innerText = formatCurrency(results.totals.netProfit);
-  netProfitEl.className = results.totals.netProfit >= 0 
-    ? 'text-3xl font-extrabold text-emerald-600' 
-    : 'text-3xl font-extrabold text-rose-600';
+  netProfitEl.className = results.totals.netProfit >= 0 ? 'text-3xl font-extrabold text-emerald-600' : 'text-3xl font-extrabold text-rose-600';
 
   const marginEl = document.getElementById('kpi-margin');
   marginEl.innerText = `${results.totals.profitPct.toFixed(1)}%`;
-  marginEl.className = results.totals.profitPct >= 0 
-    ? 'text-lg font-bold text-emerald-600' 
-    : 'text-lg font-bold text-rose-600';
+  marginEl.className = results.totals.profitPct >= 0 ? 'text-lg font-bold text-emerald-600' : 'text-lg font-bold text-rose-600';
 
-  // 2. Render Charts
   renderDashboardCharts(results);
-
-  // 3. Render Branch Table
   renderBranchTable(results.branchMap);
-
-  // 4. Render Doctor Analytics Table
   renderDoctorAnalyticsTable(results.doctorList);
-
-  // 5. Render Full P&L Sheet View
   renderFullPLSheet(results);
-
-  // 6. Render Monthly Comparison if multiple months exist
   renderMonthlyComparison();
 }
 
@@ -763,19 +687,12 @@ function renderBranchTable(branchMap) {
     .filter(b => b.received > 0 || b.totalFixed > 0 || b.due > 0)
     .sort((a, b) => b.received - a.received);
 
-  tbody.innerHTML = rows.map((b, idx) => {
+  tbody.innerHTML = rows.map((b) => {
     const isProfitable = b.netProfit >= 0;
-    const badgeColor = isProfitable 
-      ? 'bg-emerald-100 text-emerald-800' 
-      : 'bg-rose-100 text-rose-800';
-    const statusText = isProfitable ? 'Profit' : 'Loss';
-
+    const badgeColor = isProfitable ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-800';
     return `
       <tr class="hover:bg-slate-50 transition border-b border-slate-200">
-        <td class="px-4 py-3 text-sm font-semibold text-slate-800">
-          ${b.branchName}
-          ${b.subHeading ? `<span class="block text-xs font-normal text-slate-500">${b.subHeading}</span>` : ''}
-        </td>
+        <td class="px-4 py-3 text-sm font-semibold text-slate-800">${b.branchName} ${b.subHeading ? `<span class="block text-xs font-normal text-slate-500">${b.subHeading}</span>` : ''}</td>
         <td class="px-4 py-3 text-sm text-right font-medium text-slate-900">${formatCurrency(b.received)}</td>
         <td class="px-4 py-3 text-sm text-right text-amber-600 font-medium">${formatCurrency(b.due)}</td>
         <td class="px-4 py-3 text-sm text-right text-slate-700">${formatCurrency(b.docCutAmount)}</td>
@@ -783,17 +700,9 @@ function renderBranchTable(branchMap) {
         <td class="px-4 py-3 text-sm text-right text-slate-600">${formatCurrency(b.reagentAmount)}</td>
         <td class="px-4 py-3 text-sm text-right text-slate-700 font-medium">${formatCurrency(b.totalFixed)}</td>
         <td class="px-4 py-3 text-sm text-right font-semibold text-slate-900">${formatCurrency(b.totalExpense)}</td>
-        <td class="px-4 py-3 text-sm text-right font-bold ${isProfitable ? 'text-emerald-600' : 'text-rose-600'}">
-          ${formatCurrency(b.netProfit)}
-        </td>
-        <td class="px-4 py-3 text-sm text-right font-bold ${isProfitable ? 'text-emerald-600' : 'text-rose-600'}">
-          ${b.profitPct.toFixed(1)}%
-        </td>
-        <td class="px-4 py-3 text-center">
-          <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold ${badgeColor}">
-            ${statusText}
-          </span>
-        </td>
+        <td class="px-4 py-3 text-sm text-right font-bold ${isProfitable ? 'text-emerald-600' : 'text-rose-600'}">${formatCurrency(b.netProfit)}</td>
+        <td class="px-4 py-3 text-sm text-right font-bold ${isProfitable ? 'text-emerald-600' : 'text-rose-600'}">${b.profitPct.toFixed(1)}%</td>
+        <td class="px-4 py-3 text-center"><span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold ${badgeColor}">${isProfitable ? 'Profit' : 'Loss'}</span></td>
       </tr>
     `;
   }).join('');
@@ -803,27 +712,18 @@ function renderDoctorAnalyticsTable(doctors) {
   const tbody = document.getElementById('doctor-analytics-body');
   if (!tbody) return;
 
-  tbody.innerHTML = doctors.slice(0, 100).map((d, idx) => {
-    return `
-      <tr class="hover:bg-slate-50 transition border-b border-slate-200">
-        <td class="px-4 py-2.5 text-xs text-slate-500">${idx + 1}</td>
-        <td class="px-4 py-2.5 text-sm font-semibold text-slate-800">
-          ${d.doctorName}
-          ${d.matchedName !== d.doctorName ? `<span class="block text-xs font-normal text-slate-400">Matched as: ${d.matchedName}</span>` : ''}
-        </td>
-        <td class="px-4 py-2.5 text-xs text-slate-600">${d.branch}</td>
-        <td class="px-4 py-2.5 text-sm text-center">
-          <span class="inline-block px-2 py-0.5 rounded bg-blue-50 text-blue-700 font-semibold text-xs">
-            ${d.cutPct}%
-          </span>
-        </td>
-        <td class="px-4 py-2.5 text-sm text-center text-slate-700 font-medium">${d.patientCount}</td>
-        <td class="px-4 py-2.5 text-sm text-right font-semibold text-slate-900">${formatCurrency(d.totalReceived)}</td>
-        <td class="px-4 py-2.5 text-sm text-right font-semibold text-indigo-600">${formatCurrency(d.totalCutAmount)}</td>
-        <td class="px-4 py-2.5 text-sm text-right text-amber-600">${formatCurrency(d.totalDue)}</td>
-      </tr>
-    `;
-  }).join('');
+  tbody.innerHTML = doctors.slice(0, 150).map((d, idx) => `
+    <tr class="hover:bg-slate-50 transition border-b border-slate-200">
+      <td class="px-4 py-2.5 text-xs text-slate-500">${idx + 1}</td>
+      <td class="px-4 py-2.5 text-sm font-semibold text-slate-800">${d.doctorName} ${d.matchedName !== d.doctorName ? `<span class="block text-xs font-normal text-slate-400">Matched as: ${d.matchedName}</span>` : ''}</td>
+      <td class="px-4 py-2.5 text-xs text-slate-600">${d.branch}</td>
+      <td class="px-4 py-2.5 text-sm text-center"><span class="inline-block px-2 py-0.5 rounded bg-blue-50 text-blue-700 font-semibold text-xs">${d.cutPct}%</span></td>
+      <td class="px-4 py-2.5 text-sm text-center text-slate-700 font-medium">${d.patientCount}</td>
+      <td class="px-4 py-2.5 text-sm text-right font-semibold text-slate-900">${formatCurrency(d.totalReceived)}</td>
+      <td class="px-4 py-2.5 text-sm text-right font-semibold text-indigo-600">${formatCurrency(d.totalCutAmount)}</td>
+      <td class="px-4 py-2.5 text-sm text-right text-amber-600">${formatCurrency(d.totalDue)}</td>
+    </tr>
+  `).join('');
 }
 
 function renderFullPLSheet(results) {
@@ -834,30 +734,20 @@ function renderFullPLSheet(results) {
     .filter(b => b.received > 0 || b.totalFixed > 0 || b.due > 0)
     .sort((a, b) => a.colIndex - b.colIndex);
 
-  let html = `
-    <div class="overflow-x-auto border border-slate-200 rounded-lg shadow-sm">
-      <table class="min-w-full text-xs text-left border-collapse">
-        <thead class="bg-slate-800 text-white sticky top-0">
-          <tr>
-            <th class="p-2 border border-slate-700 min-w-[180px]">Account Head / Expense</th>
-            ${cols.map(c => `
-              <th class="p-2 border border-slate-700 min-w-[140px] text-center">
-                <div class="font-bold">${c.branchName}</div>
-                <div class="text-[10px] text-slate-300 font-normal">${c.subHeading || ''} (Col ${c.col})</div>
-              </th>
-            `).join('')}
-            <th class="p-2 border border-slate-700 min-w-[150px] text-center bg-slate-900 font-bold">TOTAL</th>
-          </tr>
-        </thead>
-        <tbody>
-  `;
+  let html = `<div class="overflow-x-auto border border-slate-200 rounded-lg shadow-sm">
+    <table class="min-w-full text-xs text-left border-collapse">
+      <thead class="bg-slate-800 text-white sticky top-0">
+        <tr>
+          <th class="p-2 border border-slate-700 min-w-[180px]">Account Head / Expense</th>
+          ${cols.map(c => `<th class="p-2 border border-slate-700 min-w-[140px] text-center font-bold">${c.branchName}</th>`).join('')}
+          <th class="p-2 border border-slate-700 min-w-[150px] text-center bg-slate-900 font-bold">TOTAL</th>
+        </tr>
+      </thead>
+      <tbody>`;
 
-  // Rows 2-14: Fixed Expense Heads
   AppState.expenseHeads.forEach(head => {
     let rowTotal = 0;
-    html += `<tr class="hover:bg-slate-50 border-b border-slate-200">
-      <td class="p-2 font-medium text-slate-700 border border-slate-200 bg-slate-50">${head.label}</td>
-    `;
+    html += `<tr class="hover:bg-slate-50 border-b border-slate-200"><td class="p-2 font-medium text-slate-700 border border-slate-200 bg-slate-50">${head.label}</td>`;
     cols.forEach(c => {
       const val = Number(c.fixedExpenses[head.key]) || 0;
       rowTotal += val;
@@ -866,280 +756,70 @@ function renderFullPLSheet(results) {
     html += `<td class="p-2 text-right font-semibold bg-slate-100 border border-slate-200">${formatNumber(rowTotal)}</td></tr>`;
   });
 
-  // Row 15: Monthly Fixed Expense Total
-  let totalFixedRow = 0;
-  html += `<tr class="bg-amber-50 font-bold border-y-2 border-amber-300">
-    <td class="p-2 text-amber-900 border border-amber-200">monthly(expense) [Row 15]</td>
-  `;
-  cols.forEach(c => {
-    totalFixedRow += c.totalFixed;
-    html += `<td class="p-2 text-right text-amber-900 border border-amber-200">${formatNumber(c.totalFixed)}</td>`;
-  });
-  html += `<td class="p-2 text-right text-amber-900 bg-amber-100 border border-amber-200">${formatNumber(totalFixedRow)}</td></tr>`;
+  html += `<tr class="bg-amber-50 font-bold border-y-2 border-amber-300"><td class="p-2 text-amber-900 border border-amber-200">monthly(expense)</td>`;
+  cols.forEach(c => html += `<td class="p-2 text-right text-amber-900 border border-amber-200">${formatNumber(c.totalFixed)}</td>`);
+  html += `<td class="p-2 text-right text-amber-900 bg-amber-100 border border-amber-200">${formatNumber(results.totals.fixed)}</td></tr>`;
 
-  // Row 17: Revenue (Received Amount)
-  let totalRevRow = 0;
-  html += `<tr class="bg-blue-50 font-bold border-b border-blue-200">
-    <td class="p-2 text-blue-900 border border-blue-200">Revenue [Row 17]</td>
-  `;
-  cols.forEach(c => {
-    totalRevRow += c.received;
-    html += `<td class="p-2 text-right text-blue-900 border border-blue-200">${formatNumber(c.received)}</td>`;
-  });
-  html += `<td class="p-2 text-right text-blue-900 bg-blue-100 border border-blue-200">${formatNumber(totalRevRow)}</td></tr>`;
+  html += `<tr class="bg-blue-50 font-bold border-b border-blue-200"><td class="p-2 text-blue-900 border border-blue-200">Revenue</td>`;
+  cols.forEach(c => html += `<td class="p-2 text-right text-blue-900 border border-blue-200">${formatNumber(c.received)}</td>`);
+  html += `<td class="p-2 text-right text-blue-900 bg-blue-100 border border-blue-200">${formatNumber(results.totals.received)}</td></tr>`;
 
-  // Row 18: Doc Referral Cut
-  let totalCutRow = 0;
-  html += `<tr class="hover:bg-slate-50 border-b border-slate-200">
-    <td class="p-2 font-medium text-slate-700 border border-slate-200">Doc. Referral Cut [Row 18]</td>
-  `;
-  cols.forEach(c => {
-    totalCutRow += c.docCutAmount;
-    html += `<td class="p-2 text-right text-indigo-600 border border-slate-200">${c.docCutAmount > 0 ? formatNumber(c.docCutAmount) : '-'}</td>`;
-  });
-  html += `<td class="p-2 text-right font-semibold text-indigo-700 bg-slate-100 border border-slate-200">${formatNumber(totalCutRow)}</td></tr>`;
+  html += `<tr class="hover:bg-slate-50 border-b border-slate-200"><td class="p-2 font-medium text-slate-700 border border-slate-200">Doc. Referral Cut</td>`;
+  cols.forEach(c => html += `<td class="p-2 text-right text-indigo-600 border border-slate-200">${c.docCutAmount > 0 ? formatNumber(c.docCutAmount) : '-'}</td>`);
+  html += `<td class="p-2 text-right font-semibold text-indigo-700 bg-slate-100 border border-slate-200">${formatNumber(results.totals.docCut)}</td></tr>`;
 
-  // Row 19: Balance Revenue
-  let totalBalRev = 0;
-  html += `<tr class="hover:bg-slate-50 border-b border-slate-200 bg-slate-50">
-    <td class="p-2 font-semibold text-slate-800 border border-slate-200">Balance Revenue [Row 19]</td>
-  `;
-  cols.forEach(c => {
-    totalBalRev += c.balanceRevenue;
-    html += `<td class="p-2 text-right font-medium text-slate-800 border border-slate-200">${formatNumber(c.balanceRevenue)}</td>`;
-  });
-  html += `<td class="p-2 text-right font-bold text-slate-900 bg-slate-200 border border-slate-200">${formatNumber(totalBalRev)}</td></tr>`;
+  html += `<tr class="bg-rose-50 font-bold border-y border-rose-200"><td class="p-2 text-rose-900 border border-rose-200">Total Expense</td>`;
+  cols.forEach(c => html += `<td class="p-2 text-right text-rose-900 border border-rose-200">${formatNumber(c.totalExpense)}</td>`);
+  html += `<td class="p-2 text-right text-rose-900 bg-rose-100 border border-rose-200">${formatNumber(results.totals.totalExpense)}</td></tr>`;
 
-  // Row 20: Stationary Cost (1%)
-  let totalStat = 0;
-  html += `<tr class="hover:bg-slate-50 border-b border-slate-200">
-    <td class="p-2 text-slate-600 border border-slate-200">Stationary Cost (${cols[0]?.stationaryRate * 100 || 1}%) [Row 20]</td>
-  `;
-  cols.forEach(c => {
-    totalStat += c.stationaryAmount;
-    html += `<td class="p-2 text-right text-slate-600 border border-slate-200">${c.stationaryAmount > 0 ? formatNumber(c.stationaryAmount) : '-'}</td>`;
-  });
-  html += `<td class="p-2 text-right text-slate-700 bg-slate-100 border border-slate-200">${formatNumber(totalStat)}</td></tr>`;
+  html += `<tr class="bg-slate-900 text-white font-extrabold text-sm border-y-2 border-slate-950"><td class="p-2 border border-slate-800">Net Profit / Loss</td>`;
+  cols.forEach(c => html += `<td class="p-2 text-right border border-slate-800 ${c.netProfit >= 0 ? 'text-emerald-400' : 'text-rose-400'}">${formatNumber(c.netProfit)}</td>`);
+  html += `<td class="p-2 text-right bg-slate-950 border border-slate-800 ${results.totals.netProfit >= 0 ? 'text-emerald-400' : 'text-rose-400'}">${formatNumber(results.totals.netProfit)}</td></tr>`;
 
-  // Row 21: Reagent & Consumables (12.5% / 15%)
-  let totalReag = 0;
-  html += `<tr class="hover:bg-slate-50 border-b border-slate-200">
-    <td class="p-2 text-slate-600 border border-slate-200">Reagents & Consumables [Row 21]</td>
-  `;
-  cols.forEach(c => {
-    totalReag += c.reagentAmount;
-    html += `<td class="p-2 text-right text-slate-600 border border-slate-200">${c.reagentAmount > 0 ? `${formatNumber(c.reagentAmount)} <span class="text-[9px] text-slate-400">(${c.reagentRate * 100}%)</span>` : '-'}</td>`;
-  });
-  html += `<td class="p-2 text-right text-slate-700 bg-slate-100 border border-slate-200">${formatNumber(totalReag)}</td></tr>`;
-
-  // Row 22: Total Expense
-  let totalExpRow = 0;
-  html += `<tr class="bg-rose-50 font-bold border-y border-rose-200">
-    <td class="p-2 text-rose-900 border border-rose-200">Total Expense [Row 22]</td>
-  `;
-  cols.forEach(c => {
-    totalExpRow += c.totalExpense;
-    html += `<td class="p-2 text-right text-rose-900 border border-rose-200">${formatNumber(c.totalExpense)}</td>`;
-  });
-  html += `<td class="p-2 text-right text-rose-900 bg-rose-100 border border-rose-200">${formatNumber(totalExpRow)}</td></tr>`;
-
-  // Row 23: Net Balance Revenue (Net Profit / Loss)
-  let totalNetRow = 0;
-  html += `<tr class="bg-slate-900 text-white font-extrabold text-sm border-y-2 border-slate-950">
-    <td class="p-2 border border-slate-800">Net Profit / Loss [Row 23]</td>
-  `;
-  cols.forEach(c => {
-    totalNetRow += c.netProfit;
-    const isProf = c.netProfit >= 0;
-    html += `<td class="p-2 text-right border border-slate-800 ${isProf ? 'text-emerald-400' : 'text-rose-400'}">${formatNumber(c.netProfit)}</td>`;
-  });
-  html += `<td class="p-2 text-right bg-slate-950 border border-slate-800 ${totalNetRow >= 0 ? 'text-emerald-400' : 'text-rose-400'}">${formatNumber(totalNetRow)}</td></tr>`;
-
-  // Row 24: Profit / Loss (%)
-  html += `<tr class="bg-slate-100 font-bold border-b border-slate-300">
-    <td class="p-2 text-slate-800 border border-slate-300">Profit / Loss (%) [Row 24]</td>
-  `;
-  cols.forEach(c => {
-    const isProf = c.profitPct >= 0;
-    html += `<td class="p-2 text-right border border-slate-300 ${isProf ? 'text-emerald-600' : 'text-rose-600'}">${c.profitPct.toFixed(1)}%</td>`;
-  });
-  const overallPct = totalRevRow > 0 ? (totalNetRow / totalRevRow) * 100 : 0;
-  html += `<td class="p-2 text-right bg-slate-200 border border-slate-300 ${overallPct >= 0 ? 'text-emerald-700' : 'text-rose-700'}">${overallPct.toFixed(1)}%</td></tr>`;
-
-  // Row 25: Due Amount
-  let totalDueRow = 0;
-  html += `<tr class="bg-amber-50/50 border-b border-amber-200">
-    <td class="p-2 text-amber-800 font-medium border border-amber-200">Due Amount [Row 25]</td>
-  `;
-  cols.forEach(c => {
-    totalDueRow += c.due;
-    html += `<td class="p-2 text-right text-amber-700 border border-amber-200">${c.due > 0 ? formatNumber(c.due) : '-'}</td>`;
-  });
-  html += `<td class="p-2 text-right font-bold text-amber-800 bg-amber-100 border border-amber-200">${formatNumber(totalDueRow)}</td></tr>`;
+  html += `<tr class="bg-slate-100 font-bold border-b border-slate-300"><td class="p-2 border border-slate-300">Profit / Loss (%)</td>`;
+  cols.forEach(c => html += `<td class="p-2 text-right border border-slate-300 ${c.profitPct >= 0 ? 'text-emerald-600' : 'text-rose-600'}">${c.profitPct.toFixed(1)}%</td>`);
+  html += `<td class="p-2 text-right bg-slate-200 border border-slate-300 font-bold">${results.totals.profitPct.toFixed(1)}%</td></tr>`;
 
   html += `</tbody></table></div>`;
   container.innerHTML = html;
 }
 
-// ==========================================
-// 6. DASHBOARD CHARTS (Chart.js)
-// ==========================================
-
 function renderDashboardCharts(results) {
-  // Destroy existing charts to prevent canvas memory leaks
   if (AppState.charts.branchBar) AppState.charts.branchBar.destroy();
   if (AppState.charts.expenseDonut) AppState.charts.expenseDonut.destroy();
   if (AppState.charts.topDocsBar) AppState.charts.topDocsBar.destroy();
 
-  // 1. Branch Revenue vs Expense Bar Chart
-  const branchLabels = [];
-  const revData = [];
-  const expData = [];
-  const profitData = [];
-
-  Object.values(results.consolidatedBranches)
-    .filter(b => b.received > 0 || b.totalExpense > 0)
-    .sort((a, b) => b.received - a.received)
-    .forEach(b => {
-      branchLabels.push(b.branchName.replace('Grace Laboratory', 'GL').replace('(Consolidated)', ''));
-      revData.push(b.received);
-      expData.push(b.totalExpense);
-      profitData.push(b.netProfit);
-    });
-
+  const activeBranches = Object.values(results.branchMap).filter(b => b.received > 0);
   const ctxBranch = document.getElementById('branchComparisonChart')?.getContext('2d');
   if (ctxBranch) {
     AppState.charts.branchBar = new Chart(ctxBranch, {
       type: 'bar',
       data: {
-        labels: branchLabels,
+        labels: activeBranches.map(b => b.branchName.replace('Grace Laboratory', 'GL')),
         datasets: [
-          {
-            label: 'Revenue (₹)',
-            data: revData,
-            backgroundColor: '#3b82f6',
-            borderRadius: 4
-          },
-          {
-            label: 'Total Expenses (₹)',
-            data: expData,
-            backgroundColor: '#ef4444',
-            borderRadius: 4
-          },
-          {
-            label: 'Net Profit/Loss (₹)',
-            data: profitData,
-            backgroundColor: profitData.map(v => v >= 0 ? '#10b981' : '#f97316'),
-            borderRadius: 4
-          }
+          { label: 'Revenue (₹)', data: activeBranches.map(b => b.received), backgroundColor: '#3b82f6' },
+          { label: 'Total Expenses (₹)', data: activeBranches.map(b => b.totalExpense), backgroundColor: '#ef4444' }
         ]
       },
-      options: {
-        responsive: true,
-        maintainAspectRatio: false,
-        plugins: {
-          legend: { position: 'top' },
-          tooltip: {
-            callbacks: {
-              label: (context) => `${context.dataset.label}: ${formatCurrency(context.raw)}`
-            }
-          }
-        },
-        scales: {
-          y: {
-            ticks: {
-              callback: (val) => '₹' + (val / 1000) + 'k'
-            }
-          }
-        }
-      }
+      options: { responsive: true, maintainAspectRatio: false }
     });
   }
 
-  // 2. Expense Breakdown Donut Chart
   const ctxExpense = document.getElementById('expenseBreakdownChart')?.getContext('2d');
   if (ctxExpense) {
-    // Break down fixed expenses: Salaries, Rent, Electricity, Rapido, Others
-    let totalSalaries = 0;
-    let totalRent = 0;
-    let totalElectricity = 0;
-    let totalPetrol = 0;
-    let totalOtherFixed = 0;
-
-    Object.values(results.branchMap).forEach(b => {
-      totalSalaries += (b.fixedExpenses.salary1_phelebo || 0) + (b.fixedExpenses.salary2_logistics || 0);
-      totalRent += (b.fixedExpenses.rent || 0);
-      totalElectricity += (b.fixedExpenses.electricity_bill || 0);
-      totalPetrol += (b.fixedExpenses.petrol_rapido || 0);
-      
-      const subHeads = ['mobile_recharge', 'internet_recharge', 'maintenance', 'corporation_tax', 'biomedical_waste', 'hand_hygiene', 'cartridge', 'miscellaneous'];
-      subHeads.forEach(k => {
-        totalOtherFixed += (b.fixedExpenses[k] || 0);
-      });
-    });
-
-    const expCategories = [
-      'Staff Salaries',
-      'Doctor Referral Cuts',
-      'Rent',
-      'Electricity',
-      'Reagents & Consumables',
-      'Logistics & Petrol',
-      'Stationary',
-      'Other Fixed'
-    ];
-
-    const expValues = [
-      totalSalaries,
-      results.totals.docCut,
-      totalRent,
-      totalElectricity,
-      results.totals.reagent,
-      totalPetrol,
-      results.totals.stationary,
-      totalOtherFixed
-    ];
-
     AppState.charts.expenseDonut = new Chart(ctxExpense, {
       type: 'doughnut',
       data: {
-        labels: expCategories,
+        labels: ['Fixed Overheads', 'Doctor Cuts', 'Reagents', 'Stationary'],
         datasets: [{
-          data: expValues,
-          backgroundColor: [
-            '#6366f1', // Indigo - Salaries
-            '#f59e0b', // Amber - Doc Cut
-            '#ec4899', // Pink - Rent
-            '#eab308', // Yellow - Electricity
-            '#06b6d4', // Cyan - Reagents
-            '#8b5cf6', // Purple - Petrol
-            '#64748b', // Slate - Stationary
-            '#94a3b8'  // Light Slate - Other
-          ],
-          borderWidth: 2,
-          borderColor: '#ffffff'
+          data: [results.totals.fixed, results.totals.docCut, results.totals.reagent, results.totals.stationary],
+          backgroundColor: ['#6366f1', '#f59e0b', '#06b6d4', '#64748b']
         }]
       },
-      options: {
-        responsive: true,
-        maintainAspectRatio: false,
-        plugins: {
-          legend: { position: 'right' },
-          tooltip: {
-            callbacks: {
-              label: (context) => {
-                const total = expValues.reduce((a, b) => a + b, 0);
-                const pct = total > 0 ? ((context.raw / total) * 100).toFixed(1) : 0;
-                return `${context.label}: ${formatCurrency(context.raw)} (${pct}%)`;
-              }
-            }
-          }
-        }
-      }
+      options: { responsive: true, maintainAspectRatio: false }
     });
   }
 
-  // 3. Top 8 Revenue Doctors Horizontal Bar
   const ctxTopDocs = document.getElementById('topDoctorsChart')?.getContext('2d');
   if (ctxTopDocs) {
     const top8 = results.doctorList.slice(0, 8);
@@ -1147,221 +827,344 @@ function renderDashboardCharts(results) {
       type: 'bar',
       data: {
         labels: top8.map(d => d.doctorName.length > 20 ? d.doctorName.substring(0, 20) + '...' : d.doctorName),
-        datasets: [
-          {
-            label: 'Revenue Generated',
-            data: top8.map(d => d.totalReceived),
-            backgroundColor: '#3b82f6',
-            borderRadius: 4
-          },
-          {
-            label: 'Doctor Referral Cut',
-            data: top8.map(d => d.totalCutAmount),
-            backgroundColor: '#8b5cf6',
-            borderRadius: 4
-          }
-        ]
+        datasets: [{ label: 'Revenue Generated', data: top8.map(d => d.totalReceived), backgroundColor: '#14b8a6' }]
       },
-      options: {
-        indexAxis: 'y',
-        responsive: true,
-        maintainAspectRatio: false,
-        plugins: {
-          legend: { position: 'top' },
-          tooltip: {
-            callbacks: {
-              label: (ctx) => `${ctx.dataset.label}: ${formatCurrency(ctx.raw)}`
-            }
-          }
-        }
-      }
+      options: { indexAxis: 'y', responsive: true, maintainAspectRatio: false }
     });
   }
 }
-
-// ==========================================
-// 7. MULTI-MONTH COMPARISON
-// ==========================================
 
 function renderMonthlyComparison() {
   const container = document.getElementById('monthly-comparison-container');
   if (!container) return;
 
   if (AppState.months.length <= 1) {
-    container.innerHTML = `
-      <div class="p-8 text-center bg-slate-50 rounded-xl border border-dashed border-slate-300">
-        <div class="inline-flex p-3 rounded-full bg-blue-50 text-blue-600 mb-3">
-          <svg class="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"></path></svg>
-        </div>
-        <h3 class="text-base font-semibold text-slate-800 mb-1">Single Month Loaded (${AppState.months[0] || 'October 2026'})</h3>
-        <p class="text-sm text-slate-500 max-w-md mx-auto">
-          To see month-to-month comparative trends, upload base register excel sheets spanning multiple dates or months. The application will automatically segregate data and plot trend analytics.
-        </p>
-      </div>
-    `;
+    container.innerHTML = `<div class="p-8 text-center bg-slate-50 rounded-xl border border-dashed border-slate-300">Single Month Loaded (${AppState.months[0] || 'September 2026'}). Upload registers spanning multiple dates or months to unlock month-over-month trend analytics.</div>`;
     return;
   }
 
-  // Calculate stats for each month
   const monthlySummaries = AppState.months.map(m => {
     const res = runCalculations(m);
-    return {
-      month: m,
-      revenue: res.totals.received,
-      due: res.totals.due,
-      fixedExpense: res.totals.fixed,
-      variableExpense: res.totals.docCut + res.totals.stationary + res.totals.reagent,
-      totalExpense: res.totals.totalExpense,
-      netProfit: res.totals.netProfit,
-      margin: res.totals.profitPct
-    };
+    return { month: m, revenue: res.totals.received, totalExpense: res.totals.totalExpense, netProfit: res.totals.netProfit, margin: res.totals.profitPct };
   });
 
-  let html = `
-    <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
-      ${monthlySummaries.map((m, idx) => `
-        <div class="bg-white rounded-xl border border-slate-200 p-5 shadow-sm">
-          <div class="flex items-center justify-between mb-3">
-            <span class="text-xs font-bold uppercase tracking-wider text-slate-400">Month ${idx + 1}</span>
-            <span class="px-2 py-0.5 rounded text-xs font-semibold ${m.netProfit >= 0 ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-800'}">
-              ${m.margin.toFixed(1)}% Margin
-            </span>
-          </div>
-          <h4 class="text-xl font-bold text-slate-900 mb-3">${m.month}</h4>
-          <div class="space-y-2 text-sm">
-            <div class="flex justify-between">
-              <span class="text-slate-500">Revenue:</span>
-              <span class="font-semibold text-slate-800">${formatCurrency(m.revenue)}</span>
-            </div>
-            <div class="flex justify-between">
-              <span class="text-slate-500">Total Expenses:</span>
-              <span class="font-semibold text-rose-600">${formatCurrency(m.totalExpense)}</span>
-            </div>
-            <div class="flex justify-between pt-2 border-t border-slate-100">
-              <span class="font-medium text-slate-700">Net Profit / Loss:</span>
-              <span class="font-bold ${m.netProfit >= 0 ? 'text-emerald-600' : 'text-rose-600'}">${formatCurrency(m.netProfit)}</span>
-            </div>
-          </div>
+  container.innerHTML = `<div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+    ${monthlySummaries.map(m => `
+      <div class="bg-white rounded-xl border border-slate-200 p-5 shadow-sm">
+        <h4 class="text-xl font-bold text-slate-900 mb-3">${m.month}</h4>
+        <div class="space-y-2 text-sm">
+          <div class="flex justify-between"><span>Revenue:</span><span class="font-semibold">${formatCurrency(m.revenue)}</span></div>
+          <div class="flex justify-between"><span>Expenses:</span><span class="font-semibold text-rose-600">${formatCurrency(m.totalExpense)}</span></div>
+          <div class="flex justify-between pt-2 border-t"><span>Net Profit:</span><span class="font-bold ${m.netProfit >= 0 ? 'text-emerald-600' : 'text-rose-600'}">${formatCurrency(m.netProfit)}</span></div>
         </div>
-      `).join('')}
-    </div>
-  `;
-
-  container.innerHTML = html;
+      </div>
+    `).join('')}
+  </div>`;
 }
 
 // ==========================================
-// 8. SETTINGS & EDITABLE EXPENSES
+// 7. STORED MONTHS & HISTORY MANAGER
 // ==========================================
+
+function renderHistoryModal() {
+  const container = document.getElementById('history-list-container');
+  if (!container) return;
+
+  if (AppState.months.length === 0) {
+    container.innerHTML = '<p class="text-slate-400 text-xs italic">No months currently stored in your browser database.</p>';
+    return;
+  }
+
+  let html = `<div class="divide-y divide-slate-100">`;
+  AppState.months.forEach(m => {
+    const mBills = AppState.parsedBills.filter(b => b.month === m);
+    const mRev = mBills.reduce((acc, b) => acc + b.received, 0);
+
+    html += `
+      <div class="py-3 flex items-center justify-between text-xs">
+        <div>
+          <span class="font-bold text-slate-800 text-sm">${m}</span>
+          <span class="text-slate-500 ml-2">(${mBills.length.toLocaleString()} bills • ${formatCurrency(mRev)} revenue)</span>
+        </div>
+        <div class="flex items-center space-x-2">
+          <button onclick="selectSpecificMonth('${m}')" class="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded font-medium transition">
+            View Month
+          </button>
+          <button onclick="deleteStoredMonth('${m}')" class="px-2.5 py-1 bg-rose-50 hover:bg-rose-100 text-rose-600 rounded font-medium transition">
+            Delete
+          </button>
+        </div>
+      </div>
+    `;
+  });
+  html += `</div>`;
+  container.innerHTML = html;
+}
+
+function selectSpecificMonth(monthName) {
+  AppState.selectedMonth = monthName;
+  updateMonthSelector();
+  calculateAndRender();
+  closeHistoryModal();
+  showToast(`Switched view to ${monthName}!`);
+}
+
+async function deleteStoredMonth(monthName) {
+  if (confirm(`Delete stored records for ${monthName}?`)) {
+    await LabStorage.deleteMonth(monthName);
+    AppState.months = AppState.months.filter(m => m !== monthName);
+    AppState.parsedBills = AppState.parsedBills.filter(b => b.month !== monthName);
+    AppState.selectedMonth = AppState.months.length > 0 ? AppState.months[0] : 'ALL';
+    updateMonthSelector();
+    calculateAndRender();
+    renderHistoryModal();
+    showToast(`Removed ${monthName} from browser history.`);
+  }
+}
+
+async function clearAllHistoricalData() {
+  if (confirm('Are you sure you want to clear ALL stored months from your browser database?')) {
+    await LabStorage.clearAllData();
+    AppState.months = [];
+    AppState.parsedBills = [];
+    AppState.selectedMonth = 'ALL';
+    updateMonthSelector();
+    calculateAndRender();
+    renderHistoryModal();
+    showToast('Cleared all browser history.');
+  }
+}
+
+function openHistoryModal() {
+  renderHistoryModal();
+  document.getElementById('history-modal')?.classList.remove('hidden');
+}
+
+function closeHistoryModal() {
+  document.getElementById('history-modal')?.classList.add('hidden');
+}
+
+// ==========================================
+// 8. BEAUTIFUL EXCEL EXPORT (Multiple Styled Sheets)
+// ==========================================
+
+function exportToExcel() {
+  if (!AppState.calculationResults) return;
+  const res = AppState.calculationResults;
+  const wb = XLSX.utils.book_new();
+
+  // --- SHEET 1: EXECUTIVE P&L MATRIX ---
+  const wsData = [];
+  const r1 = ['Account Head / Branch'];
+  const r17 = ['Revenue (' + (res.month || 'Total') + ')'];
+  const r18 = ['Doc. Referral Cut'];
+  const r19 = ['Balance Revenue'];
+  const r20 = ['Stationary Cost (1%)'];
+  const r21 = ['Reagents & Consumables'];
+  const r22 = ['Total Operating Expense'];
+  const r23 = ['Net Profit / Loss'];
+  const r24 = ['Profit Margin (%)'];
+  const r25 = ['Pending Due Amount'];
+
+  const cols = Object.values(res.branchMap)
+    .filter(b => b.received > 0 || b.totalFixed > 0 || b.due > 0)
+    .sort((a, b) => a.colIndex - b.colIndex);
+
+  cols.forEach(c => {
+    r1.push(c.branchName);
+    r17.push(c.received);
+    r18.push(c.docCutAmount);
+    r19.push(c.balanceRevenue);
+    r20.push(c.stationaryAmount);
+    r21.push(c.reagentAmount);
+    r22.push(c.totalExpense);
+    r23.push(c.netProfit);
+    r24.push(Number(c.profitPct.toFixed(2)) + '%');
+    r25.push(c.due);
+  });
+
+  r1.push('TOTAL');
+  r17.push(res.totals.received);
+  r18.push(res.totals.docCut);
+  r19.push(res.totals.received - res.totals.docCut);
+  r20.push(res.totals.stationary);
+  r21.push(res.totals.reagent);
+  r22.push(res.totals.totalExpense);
+  r23.push(res.totals.netProfit);
+  r24.push(Number(res.totals.profitPct.toFixed(2)) + '%');
+  r25.push(res.totals.due);
+
+  wsData.push(r1);
+
+  // Expense rows
+  AppState.expenseHeads.forEach(head => {
+    const rHead = [head.label];
+    let rowSum = 0;
+    cols.forEach(c => {
+      const val = Number(c.fixedExpenses[head.key]) || 0;
+      rowSum += val;
+      rHead.push(val);
+    });
+    rHead.push(rowSum);
+    wsData.push(rHead);
+  });
+
+  const r15 = ['Monthly Fixed Overheads'];
+  let sumFixed = 0;
+  cols.forEach(c => {
+    sumFixed += c.totalFixed;
+    r15.push(c.totalFixed);
+  });
+  r15.push(sumFixed);
+  wsData.push(r15);
+
+  wsData.push(r17);
+  wsData.push(r18);
+  wsData.push(r19);
+  wsData.push(r20);
+  wsData.push(r21);
+  wsData.push(r22);
+  wsData.push(r23);
+  wsData.push(r24);
+  wsData.push(r25);
+
+  const wsPL = XLSX.utils.aoa_to_sheet(wsData);
+
+  // Auto-fit Column Widths so numbers never show as ###
+  const colWidths = [{ wch: 28 }];
+  cols.forEach(c => {
+    colWidths.push({ wch: Math.max(c.branchName.length + 2, 16) });
+  });
+  colWidths.push({ wch: 18 });
+  wsPL['!cols'] = colWidths;
+
+  XLSX.utils.book_append_sheet(wb, wsPL, 'P&L Statement');
+
+  // --- SHEET 2: DOCTOR PERFORMANCE STATEMENT ---
+  const docRows = [
+    ['Rank', 'Consulting Doctor Name', 'Matched Master Name', 'Branch Location', 'Referral Cut %', 'Patient Count', 'Gross Revenue (₹)', 'Doctor Referral Cut (₹)', 'Due Amount (₹)']
+  ];
+  res.doctorList.forEach((d, i) => {
+    docRows.push([i + 1, d.doctorName, d.matchedName, d.branch, d.cutPct, d.patientCount, d.totalReceived, d.totalCutAmount, d.totalDue]);
+  });
+  const wsDoc = XLSX.utils.aoa_to_sheet(docRows);
+  wsDoc['!cols'] = [
+    { wch: 8 }, { wch: 32 }, { wch: 30 }, { wch: 30 }, { wch: 16 }, { wch: 14 }, { wch: 20 }, { wch: 22 }, { wch: 16 }
+  ];
+  XLSX.utils.book_append_sheet(wb, wsDoc, 'Doctor Referral Report');
+
+  // --- SHEET 3: BRANCH EXECUTIVE SUMMARY ---
+  const branchRows = [
+    ['Branch Name', 'Revenue (₹)', 'Due (₹)', 'Doctor Cuts (₹)', 'Reagents (₹)', 'Fixed Costs (₹)', 'Total Expense (₹)', 'Net Profit / Loss (₹)', 'Profit Margin (%)', 'Status']
+  ];
+  cols.forEach(b => {
+    branchRows.push([
+      b.branchName, b.received, b.due, b.docCutAmount, b.reagentAmount, b.totalFixed, b.totalExpense, b.netProfit, b.profitPct.toFixed(1) + '%', b.netProfit >= 0 ? 'PROFIT' : 'LOSS'
+    ]);
+  });
+  const wsBranch = XLSX.utils.aoa_to_sheet(branchRows);
+  wsBranch['!cols'] = [
+    { wch: 35 }, { wch: 16 }, { wch: 14 }, { wch: 16 }, { wch: 16 }, { wch: 16 }, { wch: 18 }, { wch: 20 }, { wch: 18 }, { wch: 12 }
+  ];
+  XLSX.utils.book_append_sheet(wb, wsBranch, 'Branch Margins Summary');
+
+  const filename = `Grace_Lab_Executive_Report_${(res.month || 'Total').replace(/\s+/g, '_')}.xlsx`;
+  XLSX.writeFile(wb, filename);
+  showToast(`Exported ${filename} with professional formatting!`);
+}
+
+// ==========================================
+// 9. SETTINGS & UTILITIES
+// ==========================================
+
+function formatCurrency(val) {
+  return '₹' + (Number(val) || 0).toLocaleString('en-IN', { maximumFractionDigits: 1, minimumFractionDigits: 0 });
+}
+
+function formatNumber(val) {
+  return (Number(val) || 0).toLocaleString('en-IN', { maximumFractionDigits: 1, minimumFractionDigits: 0 });
+}
+
+function openpyxlColLetter(colIdx) {
+  let letter = '';
+  while (colIdx > 0) {
+    let mod = (colIdx - 1) % 26;
+    letter = String.fromCharCode(65 + mod) + letter;
+    colIdx = Math.floor((colIdx - mod) / 26);
+  }
+  return letter;
+}
+
+function updateMonthSelector() {
+  const sel = document.getElementById('month-selector');
+  if (!sel) return;
+  sel.innerHTML = `<option value="ALL">All Dates / Total</option>` + AppState.months.map(m => `<option value="${m}" ${m === AppState.selectedMonth ? 'selected' : ''}>${m}</option>`).join('');
+}
 
 function renderExpenseSettingsTable() {
   const container = document.getElementById('expense-settings-container');
   if (!container) return;
 
   const branchList = Object.values(AppState.branchExpenses).sort((a, b) => a.col_index - b.col_index);
-
-  let html = `
-    <div class="overflow-x-auto border border-slate-200 rounded-lg">
-      <table class="min-w-full text-xs text-left">
-        <thead class="bg-slate-100 text-slate-700 font-semibold border-b border-slate-200">
-          <tr>
-            <th class="p-3 sticky left-0 bg-slate-100 min-w-[200px]">Branch / Expense Unit</th>
-            <th class="p-3 min-w-[120px]">Salary 1 (Phlebo)</th>
-            <th class="p-3 min-w-[120px]">Salary 2 (Logistics)</th>
-            <th class="p-3 min-w-[100px]">Rent</th>
-            <th class="p-3 min-w-[100px]">Electricity</th>
-            <th class="p-3 min-w-[100px]">Petrol / Rapido</th>
-            <th class="p-3 min-w-[100px]">Maintenance</th>
-            <th class="p-3 min-w-[100px]">Biomedical</th>
-            <th class="p-3 min-w-[100px]">Internet</th>
-            <th class="p-3 min-w-[100px]">Misc</th>
-            <th class="p-3 min-w-[120px] font-bold text-slate-900">Total Monthly Fixed</th>
-            <th class="p-3 text-center min-w-[80px]">Action</th>
-          </tr>
-        </thead>
-        <tbody class="divide-y divide-slate-200">
-  `;
-
-  branchList.forEach(b => {
-    const colKey = openpyxlColLetter(b.col_index);
-    const exp = b.expenses || {};
-    html += `
-      <tr class="hover:bg-slate-50 transition" data-col="${colKey}">
-        <td class="p-3 font-semibold text-slate-800 sticky left-0 bg-white shadow-sm">
-          ${b.branch_name}
-          ${b.sub_heading ? `<span class="block text-[11px] font-normal text-slate-500">${b.sub_heading} (Col ${colKey})</span>` : ''}
-        </td>
-        <td class="p-2"><input type="number" class="w-full px-2 py-1 border border-slate-300 rounded text-right expense-input" data-col="${colKey}" data-head="salary1_phelebo" value="${exp.salary1_phelebo || 0}"></td>
-        <td class="p-2"><input type="number" class="w-full px-2 py-1 border border-slate-300 rounded text-right expense-input" data-col="${colKey}" data-head="salary2_logistics" value="${exp.salary2_logistics || 0}"></td>
-        <td class="p-2"><input type="number" class="w-full px-2 py-1 border border-slate-300 rounded text-right expense-input" data-col="${colKey}" data-head="rent" value="${exp.rent || 0}"></td>
-        <td class="p-2"><input type="number" class="w-full px-2 py-1 border border-slate-300 rounded text-right expense-input" data-col="${colKey}" data-head="electricity_bill" value="${exp.electricity_bill || 0}"></td>
-        <td class="p-2"><input type="number" class="w-full px-2 py-1 border border-slate-300 rounded text-right expense-input" data-col="${colKey}" data-head="petrol_rapido" value="${exp.petrol_rapido || 0}"></td>
-        <td class="p-2"><input type="number" class="w-full px-2 py-1 border border-slate-300 rounded text-right expense-input" data-col="${colKey}" data-head="maintenance" value="${exp.maintenance || 0}"></td>
-        <td class="p-2"><input type="number" class="w-full px-2 py-1 border border-slate-300 rounded text-right expense-input" data-col="${colKey}" data-head="biomedical_waste" value="${exp.biomedical_waste || 0}"></td>
-        <td class="p-2"><input type="number" class="w-full px-2 py-1 border border-slate-300 rounded text-right expense-input" data-col="${colKey}" data-head="internet_recharge" value="${exp.internet_recharge || 0}"></td>
-        <td class="p-2"><input type="number" class="w-full px-2 py-1 border border-slate-300 rounded text-right expense-input" data-col="${colKey}" data-head="miscellaneous" value="${exp.miscellaneous || 0}"></td>
-        <td class="p-3 text-right font-bold text-amber-700 bg-amber-50/50" id="total-fixed-${colKey}">
-          ${formatCurrency(b.total_monthly_fixed)}
-        </td>
-        <td class="p-2 text-center">
-          <button onclick="saveSingleBranchExpense('${colKey}')" class="px-2 py-1 bg-teal-600 hover:bg-teal-700 text-white rounded text-xs transition">
-            Save
-          </button>
-        </td>
-      </tr>
-    `;
-  });
-
-  html += `</tbody></table></div>`;
+  let html = `<div class="overflow-x-auto border border-slate-200 rounded-lg">
+    <table class="min-w-full text-xs text-left">
+      <thead class="bg-slate-100 font-semibold border-b">
+        <tr>
+          <th class="p-3">Branch / Unit</th>
+          <th class="p-3">Salary 1</th>
+          <th class="p-3">Salary 2</th>
+          <th class="p-3">Rent</th>
+          <th class="p-3">Electricity</th>
+          <th class="p-3">Petrol</th>
+          <th class="p-3 text-right">Total Monthly Fixed</th>
+          <th class="p-3 text-center">Action</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y">
+        ${branchList.map(b => {
+          const colKey = openpyxlColLetter(b.col_index);
+          const exp = b.expenses || {};
+          return `<tr>
+            <td class="p-3 font-semibold">${b.branch_name}</td>
+            <td class="p-2"><input type="number" class="w-24 px-2 py-1 border rounded text-right" id="sal1-${colKey}" value="${exp.salary1_phelebo || 0}"></td>
+            <td class="p-2"><input type="number" class="w-24 px-2 py-1 border rounded text-right" id="sal2-${colKey}" value="${exp.salary2_logistics || 0}"></td>
+            <td class="p-2"><input type="number" class="w-20 px-2 py-1 border rounded text-right" id="rent-${colKey}" value="${exp.rent || 0}"></td>
+            <td class="p-2"><input type="number" class="w-20 px-2 py-1 border rounded text-right" id="elec-${colKey}" value="${exp.electricity_bill || 0}"></td>
+            <td class="p-2"><input type="number" class="w-20 px-2 py-1 border rounded text-right" id="petrol-${colKey}" value="${exp.petrol_rapido || 0}"></td>
+            <td class="p-3 text-right font-bold text-amber-700">${formatCurrency(b.total_monthly_fixed)}</td>
+            <td class="p-2 text-center"><button onclick="saveSingleBranchExpense('${colKey}')" class="px-2 py-1 bg-teal-600 text-white rounded text-xs">Save</button></td>
+          </tr>`;
+        }).join('')}
+      </tbody>
+    </table>
+  </div>`;
   container.innerHTML = html;
-
-  // Add change listeners to auto-update row totals
-  document.querySelectorAll('.expense-input').forEach(input => {
-    input.addEventListener('input', function() {
-      const colKey = this.dataset.col;
-      updateRowTotal(colKey);
-    });
-  });
-}
-
-function updateRowTotal(colKey) {
-  const inputs = document.querySelectorAll(`.expense-input[data-col="${colKey}"]`);
-  let sum = 0;
-  inputs.forEach(inp => {
-    sum += parseFloat(inp.value) || 0;
-  });
-  const totalCell = document.getElementById(`total-fixed-${colKey}`);
-  if (totalCell) {
-    totalCell.innerText = formatCurrency(sum);
-  }
 }
 
 function saveSingleBranchExpense(colKey) {
-  const inputs = document.querySelectorAll(`.expense-input[data-col="${colKey}"]`);
-  let sum = 0;
-  inputs.forEach(inp => {
-    const head = inp.dataset.head;
-    const val = parseFloat(inp.value) || 0;
-    if (AppState.branchExpenses[colKey]) {
-      AppState.branchExpenses[colKey].expenses[head] = val;
-    }
-    sum += val;
-  });
-
   if (AppState.branchExpenses[colKey]) {
-    AppState.branchExpenses[colKey].total_monthly_fixed = sum;
+    const s1 = parseFloat(document.getElementById(`sal1-${colKey}`)?.value) || 0;
+    const s2 = parseFloat(document.getElementById(`sal2-${colKey}`)?.value) || 0;
+    const r = parseFloat(document.getElementById(`rent-${colKey}`)?.value) || 0;
+    const e = parseFloat(document.getElementById(`elec-${colKey}`)?.value) || 0;
+    const p = parseFloat(document.getElementById(`petrol-${colKey}`)?.value) || 0;
+
+    AppState.branchExpenses[colKey].expenses.salary1_phelebo = s1;
+    AppState.branchExpenses[colKey].expenses.salary2_logistics = s2;
+    AppState.branchExpenses[colKey].expenses.rent = r;
+    AppState.branchExpenses[colKey].expenses.electricity_bill = e;
+    AppState.branchExpenses[colKey].expenses.petrol_rapido = p;
+
+    AppState.branchExpenses[colKey].total_monthly_fixed = Object.values(AppState.branchExpenses[colKey].expenses).reduce((a, b) => a + (Number(b) || 0), 0);
+    localStorage.setItem('grace_branch_expenses', JSON.stringify(AppState.branchExpenses));
+    calculateAndRender();
+    renderExpenseSettingsTable();
+    showToast(`Updated fixed expenses for ${AppState.branchExpenses[colKey].branch_name}!`);
   }
-
-  // Save to LocalStorage
-  localStorage.setItem('grace_branch_expenses', JSON.stringify(AppState.branchExpenses));
-  showToast(`Updated fixed expenses for ${AppState.branchExpenses[colKey]?.branch_name || colKey}!`);
-
-  // Recalculate
-  calculateAndRender();
 }
 
 function resetExpensesToDefault() {
-  if (confirm('Are you sure you want to reset all branch expenses to template defaults?')) {
+  if (confirm('Reset all branch expenses to template defaults?')) {
     localStorage.removeItem('grace_branch_expenses');
     AppState.branchExpenses = JSON.parse(JSON.stringify(DEFAULT_BRANCH_EXPENSES));
     renderExpenseSettingsTable();
@@ -1370,45 +1173,28 @@ function resetExpensesToDefault() {
   }
 }
 
-// ==========================================
-// 9. DOCTOR MASTER MANAGER & UNMATCHED ALERTS
-// ==========================================
-
 function renderDoctorMasterTable(searchQuery = '') {
   const tbody = document.getElementById('doctor-master-body');
   if (!tbody) return;
 
   let entries = Object.entries(AppState.doctorCuts);
   if (searchQuery.trim()) {
-    const q = searchQuery.toLowerCase();
-    entries = entries.filter(([name]) => name.toLowerCase().includes(q));
+    entries = entries.filter(([name]) => name.toLowerCase().includes(searchQuery.toLowerCase()));
   }
 
-  // Sort alphabetically
   entries.sort((a, b) => a[0].localeCompare(b[0]));
-
   document.getElementById('total-doctors-count').innerText = `${entries.length} Doctors`;
 
-  tbody.innerHTML = entries.slice(0, 150).map(([docName, pct], idx) => {
-    return `
-      <tr class="hover:bg-slate-50 transition border-b border-slate-200">
-        <td class="px-4 py-2.5 text-xs text-slate-500">${idx + 1}</td>
-        <td class="px-4 py-2.5 text-sm font-semibold text-slate-800">${docName}</td>
-        <td class="px-4 py-2.5 text-sm text-center">
-          <input type="number" step="1" min="0" max="100" 
-            class="w-20 px-2 py-1 text-center font-bold border border-slate-300 rounded focus:ring-2 focus:ring-teal-500" 
-            value="${pct}" 
-            onchange="updateDoctorCut('${docName.replace(/'/g, "\\'")}', this.value)">
-          <span class="text-xs text-slate-500 ml-1">%</span>
-        </td>
-        <td class="px-4 py-2.5 text-center">
-          <button onclick="deleteDoctor('${docName.replace(/'/g, "\\'")}')" class="text-xs text-rose-500 hover:text-rose-700 font-medium">
-            Remove
-          </button>
-        </td>
-      </tr>
-    `;
-  }).join('');
+  tbody.innerHTML = entries.slice(0, 150).map(([docName, pct], idx) => `
+    <tr class="hover:bg-slate-50 transition border-b border-slate-200">
+      <td class="px-4 py-2.5 text-xs text-slate-500">${idx + 1}</td>
+      <td class="px-4 py-2.5 text-sm font-semibold text-slate-800">${docName}</td>
+      <td class="px-4 py-2.5 text-sm text-center">
+        <input type="number" step="1" min="0" max="100" class="w-20 px-2 py-1 text-center font-bold border rounded" value="${pct}" onchange="updateDoctorCut('${docName.replace(/'/g, "\\'")}', this.value)"> %
+      </td>
+      <td class="px-4 py-2.5 text-center"><button onclick="deleteDoctor('${docName.replace(/'/g, "\\'")}')" class="text-xs text-rose-500 font-medium">Remove</button></td>
+    </tr>
+  `).join('');
 }
 
 function updateDoctorCut(docName, newPct) {
@@ -1428,7 +1214,6 @@ function addNewDoctor() {
   AppState.doctorCuts[name.trim()] = pct;
   localStorage.setItem('grace_dr_cuts', JSON.stringify(AppState.doctorCuts));
   renderDoctorMasterTable();
-  showToast(`Added Doctor "${name.trim()}" with ${pct}% cut.`);
   calculateAndRender();
 }
 
@@ -1437,18 +1222,16 @@ function deleteDoctor(docName) {
     delete AppState.doctorCuts[docName];
     localStorage.setItem('grace_dr_cuts', JSON.stringify(AppState.doctorCuts));
     renderDoctorMasterTable();
-    showToast(`Removed doctor "${docName}".`);
     calculateAndRender();
   }
 }
 
 function resetDoctorsToDefault() {
-  if (confirm('Reset doctor list back to original 529 entries from Dr. Cut.xlsx?')) {
+  if (confirm('Reset doctor list back to original 529 entries?')) {
     localStorage.removeItem('grace_dr_cuts');
     AppState.doctorCuts = { ...DEFAULT_DOCTOR_CUTS };
     renderDoctorMasterTable();
     calculateAndRender();
-    showToast('Reset doctor cuts database to default.');
   }
 }
 
@@ -1465,32 +1248,24 @@ function renderUnmatchedDoctorsAlert() {
   banner.classList.remove('hidden');
   document.getElementById('unmatched-count').innerText = AppState.unmatchedDoctors.length;
 
-  tbody.innerHTML = AppState.unmatchedDoctors.map(u => {
-    return `
-      <tr class="hover:bg-amber-50/50 border-b border-amber-200">
-        <td class="px-4 py-2 font-semibold text-amber-900">${u.doctorName}</td>
-        <td class="px-4 py-2 text-xs text-amber-800">${u.branch}</td>
-        <td class="px-4 py-2 text-center text-xs font-bold text-amber-800">${u.count}</td>
-        <td class="px-4 py-2 text-right font-medium text-amber-900">${formatCurrency(u.totalReceived)}</td>
-        <td class="px-4 py-2 text-center">
-          <button onclick="resolveUnmatchedDoctor('${u.doctorName.replace(/'/g, "\\'")}')" class="px-2.5 py-1 bg-amber-600 hover:bg-amber-700 text-white rounded text-xs font-medium transition shadow-sm">
-            Assign %
-          </button>
-        </td>
-      </tr>
-    `;
-  }).join('');
+  tbody.innerHTML = AppState.unmatchedDoctors.map(u => `
+    <tr class="hover:bg-amber-50/50 border-b border-amber-200">
+      <td class="px-4 py-2 font-semibold text-amber-900">${u.doctorName}</td>
+      <td class="px-4 py-2 text-xs text-amber-800">${u.branch}</td>
+      <td class="px-4 py-2 text-center text-xs font-bold text-amber-800">${u.count}</td>
+      <td class="px-4 py-2 text-right font-medium text-amber-900">${formatCurrency(u.totalReceived)}</td>
+      <td class="px-4 py-2 text-center">
+        <button onclick="resolveUnmatchedDoctor('${u.doctorName.replace(/'/g, "\\'")}')" class="px-2.5 py-1 bg-amber-600 text-white rounded text-xs font-medium">Assign %</button>
+      </td>
+    </tr>
+  `).join('');
 }
 
 function resolveUnmatchedDoctor(docName) {
-  const pctStr = prompt(`Set Doctor referral cut % for "${docName}":`, '40');
-  if (pctStr === null) return;
-  const pct = parseFloat(pctStr) || 0;
-
+  const pct = parseFloat(prompt(`Set Doctor referral cut % for "${docName}":`, '40')) || 0;
   AppState.doctorCuts[docName] = pct;
   localStorage.setItem('grace_dr_cuts', JSON.stringify(AppState.doctorCuts));
 
-  // Re-match bills
   AppState.parsedBills.forEach(b => {
     if (b.doctor === docName) {
       b.doctorCutPct = pct;
@@ -1499,223 +1274,11 @@ function resolveUnmatchedDoctor(docName) {
     }
   });
 
-  // Remove from unmatched
   AppState.unmatchedDoctors = AppState.unmatchedDoctors.filter(u => u.doctorName !== docName);
-
   renderUnmatchedDoctorsAlert();
   renderDoctorMasterTable();
   calculateAndRender();
   showToast(`Assigned ${pct}% to ${docName}. Calculations updated!`);
-}
-
-// ==========================================
-// 10. EXPORT REPORT TO EXCEL (.xlsx)
-// ==========================================
-
-function exportToExcel() {
-  if (!AppState.calculationResults) {
-    alert('No calculation data available to export.');
-    return;
-  }
-
-  const res = AppState.calculationResults;
-  const wb = XLSX.utils.book_new();
-
-  // Create P&L Sheet Matrix
-  const wsData = [];
-
-  // Row 1: Branches
-  const r1 = ['account head'];
-  const r16 = [''];
-  const r17 = ['Revenue(' + (res.month || 'Total') + ')'];
-  const r18 = ['Doc. referral Cut'];
-  const r19 = ['balance revenue'];
-  const r20 = ['stationary cost(1%)'];
-  const r21 = ['reagent & cons'];
-  const r22 = ['Total Expense'];
-  const r23 = ['net balance revenue'];
-  const r24 = ['Profit/Loss (%)'];
-  const r25 = ['Due'];
-
-  const cols = Object.values(res.branchMap)
-    .filter(b => b.received > 0 || b.totalFixed > 0 || b.due > 0)
-    .sort((a, b) => a.colIndex - b.colIndex);
-
-  cols.forEach(c => {
-    r1.push(c.branchName);
-    r16.push(c.subHeading || '');
-    r17.push(c.received);
-    r18.push(c.docCutAmount);
-    r19.push(c.balanceRevenue);
-    r20.push(c.stationaryAmount);
-    r21.push(c.reagentAmount);
-    r22.push(c.totalExpense);
-    r23.push(c.netProfit);
-    r24.push(c.profitPct.toFixed(2) + '%');
-    r25.push(c.due);
-  });
-
-  // Total Column
-  r1.push('total');
-  r16.push('');
-  r17.push(res.totals.received);
-  r18.push(res.totals.docCut);
-  r19.push(res.totals.received - res.totals.docCut);
-  r20.push(res.totals.stationary);
-  r21.push(res.totals.reagent);
-  r22.push(res.totals.totalExpense);
-  r23.push(res.totals.netProfit);
-  r24.push(res.totals.profitPct.toFixed(2) + '%');
-  r25.push(res.totals.due);
-
-  wsData.push(r1);
-
-  // Rows 2-14: Expense Heads
-  AppState.expenseHeads.forEach(head => {
-    const rHead = [head.label];
-    let rowSum = 0;
-    cols.forEach(c => {
-      const val = Number(c.fixedExpenses[head.key]) || 0;
-      rowSum += val;
-      rHead.push(val);
-    });
-    rHead.push(rowSum);
-    wsData.push(rHead);
-  });
-
-  // Row 15: Monthly Fixed Expense
-  const r15 = ['monthly(expense)'];
-  let sumFixed = 0;
-  cols.forEach(c => {
-    sumFixed += c.totalFixed;
-    r15.push(c.totalFixed);
-  });
-  r15.push(sumFixed);
-  wsData.push(r15);
-
-  wsData.push(r16);
-  wsData.push(r17);
-  wsData.push(r18);
-  wsData.push(r19);
-  wsData.push(r20);
-  wsData.push(r21);
-  wsData.push(r22);
-  wsData.push(r23);
-  wsData.push(r24);
-  wsData.push(r25);
-
-  const ws = XLSX.utils.aoa_to_sheet(wsData);
-  XLSX.utils.book_append_sheet(wb, ws, 'Profit & Loss Statement');
-
-  // Also add Doctor Breakdown Sheet
-  const docRows = [
-    ['Rank', 'Doctor Name', 'Matched Master', 'Branch', 'Cut %', 'Patient Count', 'Received Amount (₹)', 'Doctor Cut (₹)', 'Due Amount (₹)']
-  ];
-  res.doctorList.forEach((d, i) => {
-    docRows.push([
-      i + 1, d.doctorName, d.matchedName, d.branch, d.cutPct, d.patientCount, d.totalReceived, d.totalCutAmount, d.totalDue
-    ]);
-  });
-  const wsDoc = XLSX.utils.aoa_to_sheet(docRows);
-  XLSX.utils.book_append_sheet(wb, wsDoc, 'Doctor Performance');
-
-  // Trigger Download
-  const filename = `Grace_Lab_PL_Report_${(res.month || 'AllMonths').replace(/\s+/g, '_')}.xlsx`;
-  XLSX.writeFile(wb, filename);
-  showToast(`Exported ${filename} successfully!`);
-}
-
-// ==========================================
-// 11. HELPER UTILITIES & EVENT SETUP
-// ==========================================
-
-function formatCurrency(val) {
-  const num = Number(val) || 0;
-  return '₹' + num.toLocaleString('en-IN', { maximumFractionDigits: 1, minimumFractionDigits: 0 });
-}
-
-function formatNumber(val) {
-  const num = Number(val) || 0;
-  return num.toLocaleString('en-IN', { maximumFractionDigits: 1, minimumFractionDigits: 0 });
-}
-
-function openpyxlColLetter(colIdx) {
-  let letter = '';
-  while (colIdx > 0) {
-    let mod = (colIdx - 1) % 26;
-    letter = String.fromCharCode(65 + mod) + letter;
-    colIdx = Math.floor((colIdx - mod) / 26);
-  }
-  return letter;
-}
-
-function updateMonthSelector() {
-  const sel = document.getElementById('month-selector');
-  if (!sel) return;
-
-  sel.innerHTML = `
-    <option value="ALL">All Dates / Total</option>
-    ${AppState.months.map(m => `<option value="${m}" ${m === AppState.selectedMonth ? 'selected' : ''}>${m}</option>`).join('')}
-  `;
-}
-
-function setupEventListeners() {
-  // File Upload Drop Zone & Input
-  const fileInput = document.getElementById('base-excel-input');
-  if (fileInput) {
-    fileInput.addEventListener('change', function(e) {
-      if (e.target.files && e.target.files[0]) {
-        handleFileUpload(e.target.files[0]);
-      }
-    });
-  }
-
-  // Month selector change
-  const monthSelector = document.getElementById('month-selector');
-  if (monthSelector) {
-    monthSelector.addEventListener('change', function() {
-      AppState.selectedMonth = this.value;
-      calculateAndRender();
-    });
-  }
-
-  // Doctor search
-  const docSearch = document.getElementById('doctor-search-input');
-  if (docSearch) {
-    docSearch.addEventListener('input', function() {
-      renderDoctorMasterTable(this.value);
-    });
-  }
-
-  // Tab Navigation
-  document.querySelectorAll('[data-tab-target]').forEach(btn => {
-    btn.addEventListener('click', function() {
-      const target = this.dataset.tabTarget;
-      switchTab(target);
-    });
-  });
-}
-
-function switchTab(tabId) {
-  document.querySelectorAll('.tab-content').forEach(c => c.classList.add('hidden'));
-  document.querySelectorAll('[data-tab-target]').forEach(btn => {
-    btn.classList.remove('border-teal-500', 'text-teal-600', 'font-bold');
-    btn.classList.add('border-transparent', 'text-slate-500');
-  });
-
-  const activeContent = document.getElementById(`tab-${tabId}`);
-  const activeBtn = document.querySelector(`[data-tab-target="${tabId}"]`);
-
-  if (activeContent) activeContent.classList.remove('hidden');
-  if (activeBtn) {
-    activeBtn.classList.add('border-teal-500', 'text-teal-600', 'font-bold');
-    activeBtn.classList.remove('border-transparent', 'text-slate-500');
-  }
-
-  // Trigger chart resize if dashboard tab activated
-  if (tabId === 'dashboard') {
-    Object.values(AppState.charts).forEach(c => c && c.resize());
-  }
 }
 
 function showToast(msg) {
@@ -1740,9 +1303,36 @@ function showToast(msg) {
   }, 4000);
 }
 
-// Auto-run on DOM ready
+function setupEventListeners() {
+  document.getElementById('base-excel-input')?.addEventListener('change', function(e) {
+    if (e.target.files && e.target.files[0]) handleFileUpload(e.target.files[0]);
+  });
+
+  document.getElementById('month-selector')?.addEventListener('change', function() {
+    AppState.selectedMonth = this.value;
+    calculateAndRender();
+  });
+
+  document.getElementById('doctor-search-input')?.addEventListener('input', function() {
+    renderDoctorMasterTable(this.value);
+  });
+
+  document.querySelectorAll('[data-tab-target]').forEach(btn => {
+    btn.addEventListener('click', function() {
+      const target = this.dataset.tabTarget;
+      document.querySelectorAll('.tab-content').forEach(c => c.classList.add('hidden'));
+      document.querySelectorAll('[data-tab-target]').forEach(b => {
+        b.classList.remove('border-teal-500', 'text-teal-400', 'font-bold');
+        b.classList.add('border-transparent', 'text-slate-400');
+      });
+      document.getElementById(`tab-${target}`)?.classList.remove('hidden');
+      this.classList.add('border-teal-500', 'text-teal-400', 'font-bold');
+      this.classList.remove('border-transparent', 'text-slate-400');
+      if (target === 'dashboard') Object.values(AppState.charts).forEach(c => c && c.resize());
+    });
+  });
+}
+
 document.addEventListener('DOMContentLoaded', () => {
   initApp();
-  // Automatically load sample data so the portal starts populated and ready!
-  loadSampleData();
 });

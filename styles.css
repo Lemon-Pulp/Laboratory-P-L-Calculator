@@ -1,17 +1,15 @@
-/* Custom styles for Grace Laboratory Portal */
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap');
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap");
 
 body {
-  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  font-family: "Inter", system-ui, -apple-system, sans-serif;
   background-color: #f8fafc;
   color: #0f172a;
 }
 
 code, .font-mono {
-  font-family: 'JetBrains Mono', monospace;
+  font-family: "JetBrains Mono", monospace;
 }
 
-/* Custom scrollbars for data-dense tables */
 ::-webkit-scrollbar {
   width: 8px;
   height: 8px;
@@ -31,9 +29,8 @@ code, .font-mono {
   background: #94a3b8;
 }
 
-/* Print styling for formal P&L reporting */
 @media print {
-  header, nav, #upload-section, .no-print {
+  header, nav, #unmatched-alert-banner, .no-print, #history-modal {
     display: none !important;
   }
   body {
@@ -45,5 +42,11 @@ code, .font-mono {
   }
   .overflow-x-auto {
     overflow-x: visible !important;
+  }
+  #tab-pl-sheet {
+    display: block !important;
+  }
+  #tab-dashboard, #tab-branches, #tab-doctors, #tab-monthly, #tab-expense-settings, #tab-doctor-master {
+    display: none !important;
   }
 }

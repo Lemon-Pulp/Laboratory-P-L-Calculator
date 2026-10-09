@@ -3,82 +3,66 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Grace Laboratory - Revenue & Profit/Loss Analytics Portal</title>
+  <title>Grace Laboratory - Revenue & P&L Analytics Portal</title>
   <!-- Tailwind CSS CDN -->
   <script src="https://cdn.tailwindcss.com"></script>
-  <script>
-    tailwind.config = {
-      theme: {
-        extend: {
-          colors: {
-            brand: {
-              50: '#f0fdfa',
-              100: '#ccfbf1',
-              500: '#14b8a6',
-              600: '#0d9488',
-              700: '#0f766e',
-              800: '#115e59',
-              900: '#134e4a'
-            }
-          }
-        }
-      }
-    }
-  </script>
   <!-- Chart.js CDN -->
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <!-- SheetJS CDN -->
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
-  <!-- Custom Styles -->
   <link rel="stylesheet" href="styles.css">
 </head>
-<body class="bg-slate-50 text-slate-900 min-h-screen flex flex-col">
+<body class="bg-slate-50 text-slate-900 min-h-screen flex flex-col font-sans">
 
-  <!-- TOP HEADER / NAVBAR -->
+  <!-- TOP NAVBAR -->
   <header class="bg-slate-900 text-white border-b border-slate-800 sticky top-0 z-40 shadow-md">
     <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
       <div class="flex items-center justify-between h-16">
         
-        <!-- Logo & Title -->
         <div class="flex items-center space-x-3">
-          <div class="w-10 h-10 rounded-lg bg-gradient-to-tr from-teal-500 to-emerald-400 flex items-center justify-center text-white shadow-lg font-extrabold text-xl tracking-wider">
+          <div class="w-10 h-10 rounded-lg bg-teal-500 flex items-center justify-center text-white font-extrabold text-xl shadow">
             GL
           </div>
           <div>
-            <h1 class="text-lg font-bold tracking-tight text-white flex items-center gap-2">
+            <h1 class="text-base sm:text-lg font-bold tracking-tight text-white flex items-center gap-2">
               Grace Medical Services
               <span class="text-[10px] px-2 py-0.5 rounded bg-teal-500/20 text-teal-300 border border-teal-500/30 uppercase font-semibold">P&L Portal</span>
             </h1>
-            <p class="text-xs text-slate-400">Daily Revenue, Referral Cuts & Monthly Profit/Loss Intelligence</p>
+            <p class="text-xs text-slate-400">Daily Revenue, Referral Cuts & Multi-Month P&L History</p>
           </div>
         </div>
 
-        <!-- Action Controls -->
-        <div class="flex items-center space-x-3">
+        <div class="flex items-center space-x-2 sm:space-x-3">
           <!-- Month Selector -->
-          <div class="flex items-center space-x-2 bg-slate-800/80 px-3 py-1.5 rounded-lg border border-slate-700">
-            <label for="month-selector" class="text-xs font-medium text-slate-400">Month:</label>
+          <div class="flex items-center space-x-1.5 bg-slate-800 px-2.5 py-1.5 rounded-lg border border-slate-700">
+            <span class="text-xs text-slate-400 hidden sm:inline">Active:</span>
             <select id="month-selector" class="bg-transparent text-xs font-semibold text-teal-400 focus:outline-none cursor-pointer">
               <option value="ALL">All Dates / Total</option>
             </select>
           </div>
 
-          <!-- Upload Register Excel Button -->
-          <label class="cursor-pointer inline-flex items-center space-x-2 px-3.5 py-1.5 bg-teal-600 hover:bg-teal-500 text-white rounded-lg text-xs font-semibold transition shadow-sm">
+          <!-- Stored Months / History Button -->
+          <button onclick="openHistoryModal()" title="View and manage stored months" class="inline-flex items-center space-x-1 px-2.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-teal-400 rounded-lg text-xs font-semibold border border-slate-700 transition">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+            <span class="hidden md:inline">History</span>
+          </button>
+
+          <!-- Upload Register -->
+          <label class="cursor-pointer inline-flex items-center space-x-1.5 px-3 py-1.5 bg-teal-600 hover:bg-teal-500 text-white rounded-lg text-xs font-semibold transition shadow-sm">
             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"></path></svg>
-            <span>Upload Register (.xlsx)</span>
+            <span>+ Upload Register</span>
             <input type="file" id="base-excel-input" accept=".xlsx, .xls, .csv" class="hidden">
           </label>
 
-          <!-- Export Excel Button -->
-          <button onclick="exportToExcel()" class="inline-flex items-center space-x-2 px-3.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs font-semibold transition border border-slate-700 shadow-sm">
+          <!-- Export Excel (Multi-Sheet) -->
+          <button onclick="exportToExcel()" class="inline-flex items-center space-x-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs font-semibold transition border border-slate-700">
             <svg class="w-4 h-4 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
-            <span>Export P&L</span>
+            <span class="hidden sm:inline">Export Excel</span>
           </button>
 
-          <!-- Reload Sample Data Button -->
-          <button onclick="loadSampleData()" title="Reload benchmark sample data" class="px-2.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white rounded-lg text-xs transition border border-slate-700">
-            Sample Data
+          <!-- Print / PDF -->
+          <button onclick="window.print()" title="Print or Save as PDF" class="px-2.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-xs transition border border-slate-700">
+            🖨️
           </button>
         </div>
 
@@ -87,67 +71,64 @@
 
     <!-- NAVIGATION TABS -->
     <div class="bg-slate-900/90 border-t border-slate-800 px-4 sm:px-6 lg:px-8">
-      <nav class="flex space-x-8 max-w-7xl mx-auto overflow-x-auto text-xs" aria-label="Tabs">
-        <button data-tab-target="dashboard" class="py-3 px-1 border-b-2 border-teal-500 font-bold text-teal-400 whitespace-nowrap flex items-center gap-1.5 transition">
-          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"></path></svg>
-          Executive Dashboard
-        </button>
-        <button data-tab-target="branches" class="py-3 px-1 border-b-2 border-transparent font-medium text-slate-400 hover:text-slate-200 whitespace-nowrap flex items-center gap-1.5 transition">
-          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"></path></svg>
-          Branch Performance
-        </button>
-        <button data-tab-target="pl-sheet" class="py-3 px-1 border-b-2 border-transparent font-medium text-slate-400 hover:text-slate-200 whitespace-nowrap flex items-center gap-1.5 transition">
-          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 10h18M3 14h18m-9-4v8m-7 4h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"></path></svg>
-          P&L Sheet Template View
-        </button>
-        <button data-tab-target="doctors" class="py-3 px-1 border-b-2 border-transparent font-medium text-slate-400 hover:text-slate-200 whitespace-nowrap flex items-center gap-1.5 transition">
-          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"></path></svg>
-          Doctor Analytics & Cuts
-        </button>
-        <button data-tab-target="monthly" class="py-3 px-1 border-b-2 border-transparent font-medium text-slate-400 hover:text-slate-200 whitespace-nowrap flex items-center gap-1.5 transition">
-          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"></path></svg>
-          Month-to-Month Comparison
-        </button>
-        <button data-tab-target="expense-settings" class="py-3 px-1 border-b-2 border-transparent font-medium text-slate-400 hover:text-slate-200 whitespace-nowrap flex items-center gap-1.5 transition">
-          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path></svg>
-          Expense & Rate Settings
-        </button>
-        <button data-tab-target="doctor-master" class="py-3 px-1 border-b-2 border-transparent font-medium text-slate-400 hover:text-slate-200 whitespace-nowrap flex items-center gap-1.5 transition">
-          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253"></path></svg>
-          Doctor Master Database
-        </button>
+      <nav class="flex space-x-6 max-w-7xl mx-auto overflow-x-auto text-xs" aria-label="Tabs">
+        <button data-tab-target="dashboard" class="py-3 px-1 border-b-2 border-teal-500 font-bold text-teal-400 whitespace-nowrap">📊 Dashboard</button>
+        <button data-tab-target="branches" class="py-3 px-1 border-b-2 border-transparent font-medium text-slate-400 hover:text-slate-200 whitespace-nowrap">🏥 Branch P&L</button>
+        <button data-tab-target="pl-sheet" class="py-3 px-1 border-b-2 border-transparent font-medium text-slate-400 hover:text-slate-200 whitespace-nowrap">📑 Full Sheet View</button>
+        <button data-tab-target="doctors" class="py-3 px-1 border-b-2 border-transparent font-medium text-slate-400 hover:text-slate-200 whitespace-nowrap">🩺 Doctor Analytics</button>
+        <button data-tab-target="monthly" class="py-3 px-1 border-b-2 border-transparent font-medium text-slate-400 hover:text-slate-200 whitespace-nowrap">📅 Month Comparison</button>
+        <button data-tab-target="expense-settings" class="py-3 px-1 border-b-2 border-transparent font-medium text-slate-400 hover:text-slate-200 whitespace-nowrap">⚙️ Expense Settings</button>
+        <button data-tab-target="doctor-master" class="py-3 px-1 border-b-2 border-transparent font-medium text-slate-400 hover:text-slate-200 whitespace-nowrap">📋 Doctor Database</button>
       </nav>
     </div>
   </header>
 
-  <!-- MAIN CONTAINER -->
+  <!-- STORED MONTHS / HISTORY MODAL -->
+  <div id="history-modal" class="hidden fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
+    <div class="bg-white rounded-2xl max-w-lg w-full p-6 shadow-2xl border border-slate-200">
+      <div class="flex items-center justify-between pb-4 border-b border-slate-200">
+        <div class="flex items-center space-x-2">
+          <span class="text-xl">📁</span>
+          <h3 class="text-base font-bold text-slate-900">Stored Months & Upload History</h3>
+        </div>
+        <button onclick="closeHistoryModal()" class="text-slate-400 hover:text-slate-600 text-lg font-bold">&times;</button>
+      </div>
+      <p class="text-xs text-slate-500 mt-2">
+        Every uploaded register is permanently saved in your browser's local database so you never lose past records. You can switch between months, delete a month, or clear all data:
+      </p>
+
+      <div id="history-list-container" class="mt-4 max-h-60 overflow-y-auto border border-slate-100 rounded-lg p-2 bg-slate-50/50"></div>
+
+      <div class="mt-5 pt-3 border-t border-slate-200 flex items-center justify-between">
+        <button onclick="clearAllHistoricalData()" class="text-xs text-rose-600 hover:text-rose-800 font-semibold">
+          Clear All History
+        </button>
+        <button onclick="closeHistoryModal()" class="px-4 py-1.5 bg-slate-900 hover:bg-slate-800 text-white rounded-lg text-xs font-semibold">
+          Done
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MAIN VIEW -->
   <main class="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6">
 
-    <!-- UNMATCHED DOCTORS ALERT BANNER -->
+    <!-- UNMATCHED DOCTOR ALERT -->
     <div id="unmatched-alert-banner" class="hidden mb-6 bg-amber-50 border-l-4 border-amber-500 p-4 rounded-r-lg shadow-sm">
       <div class="flex items-start">
-        <div class="flex-shrink-0">
-          <svg class="h-5 w-5 text-amber-500" viewBox="0 0 20 20" fill="currentColor">
-            <path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd" />
-          </svg>
-        </div>
         <div class="ml-3 flex-1">
           <div class="flex items-center justify-between">
-            <h3 class="text-sm font-bold text-amber-900">
-              Unmatched Doctor Names Detected (<span id="unmatched-count">0</span>)
-            </h3>
-            <span class="text-xs bg-amber-200 text-amber-900 px-2 py-0.5 rounded font-semibold">Treated as Self (0%)</span>
+            <h3 class="text-sm font-bold text-amber-900">Unmatched Doctor Names Detected (<span id="unmatched-count">0</span>)</h3>
+            <span class="text-xs bg-amber-200 text-amber-900 px-2 py-0.5 rounded font-semibold">Treated as 0% (Self)</span>
           </div>
-          <p class="text-xs text-amber-700 mt-1">
-            The following doctor names were not found in the Master Dr. Cut list. As requested, they are currently assigned 0% referral expense. You can click "Assign %" to link them or set a custom cut rate:
-          </p>
-          <div class="mt-3 overflow-x-auto max-h-48 overflow-y-auto border border-amber-200 rounded-md bg-white">
+          <p class="text-xs text-amber-700 mt-1">These doctors were not found in the Master Dr. Cut list. You can assign a cut percentage directly:</p>
+          <div class="mt-3 overflow-x-auto max-h-40 overflow-y-auto border border-amber-200 rounded bg-white">
             <table class="min-w-full text-xs text-left">
-              <thead class="bg-amber-100/70 text-amber-900 font-semibold sticky top-0">
+              <thead class="bg-amber-100 text-amber-900 font-semibold sticky top-0">
                 <tr>
-                  <th class="px-4 py-2">Doctor Name in Bill</th>
+                  <th class="px-4 py-2">Doctor Name in Register</th>
                   <th class="px-4 py-2">Branch</th>
-                  <th class="px-4 py-2 text-center">Patient Count</th>
+                  <th class="px-4 py-2 text-center">Cases</th>
                   <th class="px-4 py-2 text-right">Revenue (₹)</th>
                   <th class="px-4 py-2 text-center">Action</th>
                 </tr>
@@ -161,120 +142,68 @@
 
     <!-- TAB 1: EXECUTIVE DASHBOARD -->
     <section id="tab-dashboard" class="tab-content space-y-6">
-      
-      <!-- KPI Metric Cards Grid -->
       <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        
-        <!-- Total Revenue -->
-        <div class="bg-white rounded-xl border border-slate-200 p-5 shadow-sm hover:shadow transition">
-          <div class="flex items-center justify-between">
-            <span class="text-xs font-semibold text-slate-500 uppercase tracking-wider">Total Revenue</span>
-            <span class="p-2 rounded-lg bg-blue-50 text-blue-600">
-              <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
-            </span>
-          </div>
-          <div class="mt-3">
-            <div id="kpi-revenue" class="text-3xl font-extrabold text-slate-900">₹0</div>
-            <div class="text-xs text-slate-500 mt-1 flex items-center justify-between">
-              <span>Patient Collections</span>
-              <span class="text-amber-600 font-semibold" title="Pending Dues">Due: <span id="kpi-due">₹0</span></span>
-            </div>
+        <div class="bg-white rounded-xl border border-slate-200 p-5 shadow-sm">
+          <span class="text-xs font-semibold text-slate-500 uppercase tracking-wider">Total Revenue</span>
+          <div id="kpi-revenue" class="text-3xl font-extrabold text-slate-900 mt-2">₹0</div>
+          <div class="text-xs text-slate-500 mt-1 flex justify-between">
+            <span>Counter Collections</span>
+            <span class="text-amber-600 font-semibold">Due: <span id="kpi-due">₹0</span></span>
           </div>
         </div>
 
-        <!-- Total Fixed Expenses -->
-        <div class="bg-white rounded-xl border border-slate-200 p-5 shadow-sm hover:shadow transition">
-          <div class="flex items-center justify-between">
-            <span class="text-xs font-semibold text-slate-500 uppercase tracking-wider">Monthly Fixed Expenses</span>
-            <span class="p-2 rounded-lg bg-indigo-50 text-indigo-600">
-              <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"></path></svg>
-            </span>
-          </div>
-          <div class="mt-3">
-            <div id="kpi-fixed" class="text-3xl font-extrabold text-slate-900">₹0</div>
-            <div class="text-xs text-slate-500 mt-1">Salaries, Rent, Electricity, Rapido, Misc</div>
+        <div class="bg-white rounded-xl border border-slate-200 p-5 shadow-sm">
+          <span class="text-xs font-semibold text-slate-500 uppercase tracking-wider">Monthly Fixed Overheads</span>
+          <div id="kpi-fixed" class="text-3xl font-extrabold text-slate-900 mt-2">₹0</div>
+          <div class="text-xs text-slate-500 mt-1">Salaries, Rent, Bills, Rapido, Misc</div>
+        </div>
+
+        <div class="bg-white rounded-xl border border-slate-200 p-5 shadow-sm">
+          <span class="text-xs font-semibold text-slate-500 uppercase tracking-wider">Total Operating Costs</span>
+          <div id="kpi-total-exp" class="text-3xl font-extrabold text-slate-900 mt-2">₹0</div>
+          <div class="text-xs text-slate-500 mt-1 flex justify-between">
+            <span>Doc Cuts: <strong id="kpi-doc-cuts">₹0</strong></span>
+            <span>Reagents: <strong id="kpi-reagents">₹0</strong></span>
           </div>
         </div>
 
-        <!-- Total Variable Costs -->
-        <div class="bg-white rounded-xl border border-slate-200 p-5 shadow-sm hover:shadow transition">
-          <div class="flex items-center justify-between">
-            <span class="text-xs font-semibold text-slate-500 uppercase tracking-wider">Total Expenses</span>
-            <span class="p-2 rounded-lg bg-rose-50 text-rose-600">
-              <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 17h8m0 0V9m0 8l-8-8-4 4-6-6"></path></svg>
-            </span>
-          </div>
-          <div class="mt-3">
-            <div id="kpi-total-exp" class="text-3xl font-extrabold text-slate-900">₹0</div>
-            <div class="text-xs text-slate-500 mt-1 flex items-center justify-between">
-              <span>Doc Cuts: <strong id="kpi-doc-cuts">₹0</strong></span>
-              <span>Reagents: <strong id="kpi-reagents">₹0</strong></span>
-            </div>
-          </div>
-        </div>
-
-        <!-- Net Profit / Loss -->
-        <div class="bg-white rounded-xl border border-slate-200 p-5 shadow-sm hover:shadow transition">
-          <div class="flex items-center justify-between">
+        <div class="bg-white rounded-xl border border-slate-200 p-5 shadow-sm">
+          <div class="flex justify-between items-center">
             <span class="text-xs font-semibold text-slate-500 uppercase tracking-wider">Net Profit / Loss</span>
-            <span id="kpi-margin" class="text-lg font-bold text-rose-600">0%</span>
+            <span id="kpi-margin" class="text-sm font-bold text-rose-600">0%</span>
           </div>
-          <div class="mt-3">
-            <div id="kpi-net-profit" class="text-3xl font-extrabold text-rose-600">₹0</div>
-            <div class="text-xs text-slate-500 mt-1">Balance Revenue − Total Expenses</div>
-          </div>
+          <div id="kpi-net-profit" class="text-3xl font-extrabold text-rose-600 mt-2">₹0</div>
+          <div class="text-xs text-slate-500 mt-1">Revenue − Total Expenses</div>
         </div>
-
       </div>
 
-      <!-- Charts Section -->
       <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        
-        <!-- Branch Revenue vs Expenses Bar Chart -->
         <div class="bg-white rounded-xl border border-slate-200 p-5 shadow-sm">
-          <h3 class="text-sm font-bold text-slate-900 mb-1">Branch Revenue vs. Expenses</h3>
-          <p class="text-xs text-slate-500 mb-4">Comparison of daily received revenue against total operating expenses per branch</p>
-          <div class="h-72">
-            <canvas id="branchComparisonChart"></canvas>
-          </div>
+          <h3 class="text-sm font-bold text-slate-900 mb-1">Branch Revenue vs. Operating Expenses</h3>
+          <div class="h-72"><canvas id="branchComparisonChart"></canvas></div>
         </div>
-
-        <!-- Expense Distribution Donut Chart -->
         <div class="bg-white rounded-xl border border-slate-200 p-5 shadow-sm">
-          <h3 class="text-sm font-bold text-slate-900 mb-1">Operating Expense Allocation</h3>
-          <p class="text-xs text-slate-500 mb-4">Distribution across salaries, doctor referral cuts, reagents, rent & overheads</p>
-          <div class="h-72">
-            <canvas id="expenseBreakdownChart"></canvas>
-          </div>
+          <h3 class="text-sm font-bold text-slate-900 mb-1">Total Expense Breakdown</h3>
+          <div class="h-72"><canvas id="expenseBreakdownChart"></canvas></div>
         </div>
-
       </div>
 
-      <!-- Top Doctors Chart -->
       <div class="bg-white rounded-xl border border-slate-200 p-5 shadow-sm">
         <h3 class="text-sm font-bold text-slate-900 mb-1">Top Revenue Generating Doctors</h3>
-        <p class="text-xs text-slate-500 mb-4">Highest patient revenue producers and corresponding referral cuts</p>
-        <div class="h-80">
-          <canvas id="topDoctorsChart"></canvas>
-        </div>
+        <div class="h-72"><canvas id="topDoctorsChart"></canvas></div>
       </div>
-
     </section>
 
     <!-- TAB 2: BRANCH PERFORMANCE -->
     <section id="tab-branches" class="tab-content hidden space-y-4">
       <div class="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
-        <div class="p-5 border-b border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+        <div class="p-5 border-b border-slate-200 flex justify-between items-center">
           <div>
-            <h3 class="text-base font-bold text-slate-900">Branch Financial Summary</h3>
-            <p class="text-xs text-slate-500">Breakdown of revenue, referral cuts, reagent expenses, and profitability branch-wise</p>
+            <h3 class="text-base font-bold text-slate-900">Branch-Wise Profitability Statement</h3>
+            <p class="text-xs text-slate-500">Summary of revenue, referral commissions, reagents, fixed overheads, and net profit</p>
           </div>
-          <button onclick="exportToExcel()" class="inline-flex items-center space-x-1.5 px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-md text-xs font-medium transition">
-            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
-            <span>Download CSV/Excel</span>
-          </button>
+          <button onclick="exportToExcel()" class="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded text-xs font-medium">Export Excel</button>
         </div>
-
         <div class="overflow-x-auto">
           <table class="min-w-full text-xs text-left">
             <thead class="bg-slate-50 text-slate-700 font-semibold border-b border-slate-200">
@@ -301,53 +230,39 @@
     <!-- TAB 3: P&L SHEET TEMPLATE VIEW -->
     <section id="tab-pl-sheet" class="tab-content hidden space-y-4">
       <div class="bg-white rounded-xl border border-slate-200 p-5 shadow-sm">
-        <div class="flex flex-col sm:flex-row sm:items-center justify-between pb-4 border-b border-slate-200 gap-3">
+        <div class="flex justify-between items-center pb-4 border-b border-slate-200">
           <div>
-            <h3 class="text-base font-bold text-slate-900">Complete Profit & Loss Master Template</h3>
-            <p class="text-xs text-slate-500">
-              Interactive reproduction of the multi-column monthly spreadsheet (<span class="font-mono">Test AI Sheet Oct.xlsx</span>).
-            </p>
+            <h3 class="text-base font-bold text-slate-900">Monthly P&L Multi-Column Sheet View</h3>
+            <p class="text-xs text-slate-500">Exact reproduction of <span class="font-mono">Test AI Sheet Oct.xlsx</span></p>
           </div>
           <div class="flex items-center space-x-2">
-            <button onclick="window.print()" class="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-md text-xs font-medium transition flex items-center gap-1">
-              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z"></path></svg>
-              <span>Print Sheet</span>
-            </button>
-            <button onclick="exportToExcel()" class="px-3 py-1.5 bg-teal-600 hover:bg-teal-700 text-white rounded-md text-xs font-semibold transition flex items-center gap-1 shadow-sm">
-              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"></path></svg>
-              <span>Export to Excel (.xlsx)</span>
-            </button>
+            <button onclick="window.print()" class="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded text-xs font-medium">🖨️ Print / Save PDF</button>
+            <button onclick="exportToExcel()" class="px-3 py-1.5 bg-teal-600 hover:bg-teal-700 text-white rounded text-xs font-semibold shadow-sm">Export to Excel (.xlsx)</button>
           </div>
         </div>
-
-        <div class="mt-4" id="pl-sheet-container">
-          <!-- Populated dynamically by app.js -->
-        </div>
+        <div class="mt-4" id="pl-sheet-container"></div>
       </div>
     </section>
 
     <!-- TAB 4: DOCTOR ANALYTICS & CUTS -->
     <section id="tab-doctors" class="tab-content hidden space-y-4">
       <div class="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
-        <div class="p-5 border-b border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-          <div>
-            <h3 class="text-base font-bold text-slate-900">Doctor Revenue & Referral Cut Report</h3>
-            <p class="text-xs text-slate-500">All consulting doctors ranked by total received amount, referral commission, and test volume</p>
-          </div>
+        <div class="p-5 border-b border-slate-200">
+          <h3 class="text-base font-bold text-slate-900">Doctor Performance & Referral Commission</h3>
+          <p class="text-xs text-slate-500">Doctors ranked by gross revenue generated, cut percentage, and referral payable</p>
         </div>
-
         <div class="overflow-x-auto">
           <table class="min-w-full text-xs text-left">
             <thead class="bg-slate-50 text-slate-700 font-semibold border-b border-slate-200">
               <tr>
                 <th class="px-4 py-3 w-12">#</th>
                 <th class="px-4 py-3">Consulting Doctor Name</th>
-                <th class="px-4 py-3">Branch Location</th>
+                <th class="px-4 py-3">Branch</th>
                 <th class="px-4 py-3 text-center">Cut %</th>
-                <th class="px-4 py-3 text-center">Patient Count</th>
-                <th class="px-4 py-3 text-right">Received Amount (₹)</th>
+                <th class="px-4 py-3 text-center">Patients</th>
+                <th class="px-4 py-3 text-right">Revenue (₹)</th>
                 <th class="px-4 py-3 text-right">Referral Cut (₹)</th>
-                <th class="px-4 py-3 text-right">Due Amount (₹)</th>
+                <th class="px-4 py-3 text-right">Due (₹)</th>
               </tr>
             </thead>
             <tbody id="doctor-analytics-body" class="divide-y divide-slate-200"></tbody>
@@ -359,104 +274,52 @@
     <!-- TAB 5: MONTH-TO-MONTH COMPARISON -->
     <section id="tab-monthly" class="tab-content hidden space-y-4">
       <div class="bg-white rounded-xl border border-slate-200 p-5 shadow-sm">
-        <div class="mb-5 pb-4 border-b border-slate-200">
-          <h3 class="text-base font-bold text-slate-900">Month-over-Month Comparative Analytics</h3>
-          <p class="text-xs text-slate-500">Track monthly laboratory revenue trends, expense control, and net profit margins</p>
+        <div class="mb-5 pb-4 border-b border-slate-200 flex justify-between items-center">
+          <div>
+            <h3 class="text-base font-bold text-slate-900">Month-over-Month Comparative Analytics</h3>
+            <p class="text-xs text-slate-500">Compare revenue trajectories, expense ratios, and profit margins over multiple months</p>
+          </div>
+          <button onclick="openHistoryModal()" class="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded text-xs font-medium">Manage Stored Months</button>
         </div>
-
-        <div id="monthly-comparison-container">
-          <!-- Populated dynamically by app.js -->
-        </div>
+        <div id="monthly-comparison-container"></div>
       </div>
     </section>
 
     <!-- TAB 6: EXPENSE & RATE SETTINGS -->
     <section id="tab-expense-settings" class="tab-content hidden space-y-6">
       <div class="bg-white rounded-xl border border-slate-200 p-5 shadow-sm">
-        <div class="flex flex-col sm:flex-row sm:items-center justify-between pb-4 border-b border-slate-200 gap-3">
+        <div class="flex justify-between items-center pb-4 border-b border-slate-200">
           <div>
-            <h3 class="text-base font-bold text-slate-900">Branch Fixed Expense Configuration</h3>
-            <p class="text-xs text-slate-500">
-              Edit salaries, rent, electricity, petrol, etc. branch-wise. Changes immediately recalculate profit and loss and persist in your browser.
-            </p>
+            <h3 class="text-base font-bold text-slate-900">Branch Fixed Expenses & Salary Manager</h3>
+            <p class="text-xs text-slate-500">Edit fixed cost figures branch-wise. Changes save to browser memory and update calculations live.</p>
           </div>
-          <button onclick="resetExpensesToDefault()" class="px-3 py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-700 rounded-md text-xs font-semibold transition border border-rose-200">
-            Reset to Template Defaults
-          </button>
+          <button onclick="resetExpensesToDefault()" class="px-3 py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-700 rounded text-xs font-semibold border border-rose-200">Reset to Defaults</button>
         </div>
-
-        <!-- Global Variable Rates Configuration -->
-        <div class="my-5 p-4 bg-teal-50/60 border border-teal-200 rounded-lg">
-          <h4 class="text-xs font-bold uppercase tracking-wider text-teal-900 mb-2">Variable Expense Benchmark Percentages</h4>
-          <div class="grid grid-cols-1 sm:grid-cols-3 gap-4 text-xs">
-            <div>
-              <label class="block text-slate-600 mb-1 font-medium">Standard Stationary Cost (%)</label>
-              <div class="flex items-center gap-1">
-                <input type="number" step="0.1" value="1.0" class="w-24 px-2 py-1 border border-slate-300 rounded font-semibold bg-white" readonly>
-                <span class="text-slate-500 font-medium">%</span>
-                <span class="text-[10px] text-slate-400 ml-2">(Applied to all branches)</span>
-              </div>
-            </div>
-            <div>
-              <label class="block text-slate-600 mb-1 font-medium">Standard Reagents Cost (%)</label>
-              <div class="flex items-center gap-1">
-                <input type="number" step="0.5" value="12.5" class="w-24 px-2 py-1 border border-slate-300 rounded font-semibold bg-white" readonly>
-                <span class="text-slate-500 font-medium">%</span>
-                <span class="text-[10px] text-slate-400 ml-2">(Default across all branches)</span>
-              </div>
-            </div>
-            <div>
-              <label class="block text-slate-600 mb-1 font-medium">Special Reagents Cost (Dr. Chintan Thakkar)</label>
-              <div class="flex items-center gap-1">
-                <input type="number" step="0.5" value="15.0" class="w-24 px-2 py-1 border border-slate-300 rounded font-semibold bg-white" readonly>
-                <span class="text-slate-500 font-medium">%</span>
-                <span class="text-[10px] text-teal-700 font-semibold ml-2">(Special 15% rule)</span>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <div id="expense-settings-container">
-          <!-- Populated dynamically by app.js -->
-        </div>
+        <div id="expense-settings-container" class="mt-4"></div>
       </div>
     </section>
 
     <!-- TAB 7: DOCTOR MASTER DATABASE -->
     <section id="tab-doctor-master" class="tab-content hidden space-y-4">
       <div class="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
-        <div class="p-5 border-b border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+        <div class="p-5 border-b border-slate-200 flex justify-between items-center gap-3">
           <div>
-            <div class="flex items-center gap-2">
-              <h3 class="text-base font-bold text-slate-900">Doctor Master & Referral Cut Database</h3>
-              <span id="total-doctors-count" class="text-xs bg-slate-100 text-slate-600 px-2 py-0.5 rounded font-semibold">529 Doctors</span>
-            </div>
-            <p class="text-xs text-slate-500">Pre-populated from <span class="font-mono">Dr. Cut.xlsx</span>. Add, search, or edit any doctor's referral percentage.</p>
+            <h3 class="text-base font-bold text-slate-900">Doctor Referral Master List (<span id="total-doctors-count">529</span>)</h3>
+            <p class="text-xs text-slate-500">Search, edit percentages, or add new doctors</p>
           </div>
           <div class="flex items-center space-x-2">
-            <!-- Search Input -->
-            <input type="text" id="doctor-search-input" placeholder="Search doctor name..." class="px-3 py-1.5 border border-slate-300 rounded-lg text-xs w-48 sm:w-64 focus:ring-2 focus:ring-teal-500 focus:outline-none">
-            
-            <!-- Add Doctor Button -->
-            <button onclick="addNewDoctor()" class="px-3 py-1.5 bg-teal-600 hover:bg-teal-700 text-white rounded-lg text-xs font-semibold transition flex items-center gap-1 shadow-sm">
-              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path></svg>
-              <span>Add Doctor</span>
-            </button>
-            
-            <!-- Reset Button -->
-            <button onclick="resetDoctorsToDefault()" title="Reset to Dr. Cut.xlsx default" class="px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-lg text-xs transition">
-              Reset
-            </button>
+            <input type="text" id="doctor-search-input" placeholder="Search doctor..." class="px-3 py-1.5 border border-slate-300 rounded text-xs focus:ring-2 focus:ring-teal-500">
+            <button onclick="addNewDoctor()" class="px-3 py-1.5 bg-teal-600 hover:bg-teal-700 text-white rounded text-xs font-semibold">Add Doctor</button>
+            <button onclick="resetDoctorsToDefault()" class="px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded text-xs">Reset</button>
           </div>
         </div>
-
         <div class="overflow-x-auto max-h-[600px] overflow-y-auto">
           <table class="min-w-full text-xs text-left">
             <thead class="bg-slate-50 text-slate-700 font-semibold border-b border-slate-200 sticky top-0">
               <tr>
                 <th class="px-4 py-3 w-12">#</th>
-                <th class="px-4 py-3">Doctor / Clinic / Hospital Name</th>
-                <th class="px-4 py-3 text-center">Referral Cut Percentage</th>
+                <th class="px-4 py-3">Doctor / Hospital Name</th>
+                <th class="px-4 py-3 text-center">Referral Cut (%)</th>
                 <th class="px-4 py-3 text-center w-24">Action</th>
               </tr>
             </thead>
@@ -468,21 +331,10 @@
 
   </main>
 
-  <!-- FOOTER -->
-  <footer class="bg-white border-t border-slate-200 py-6 mt-12 text-xs text-slate-500">
-    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex flex-col sm:flex-row items-center justify-between gap-4">
-      <div class="flex items-center space-x-2">
-        <span class="font-semibold text-slate-700">Grace Medical Services Pvt. Ltd.</span>
-        <span>•</span>
-        <span>Standalone Client-Side Architecture for GitHub Pages</span>
-      </div>
-      <div>
-        <span>Automated Data Parsing & Financial Accounting Engine</span>
-      </div>
-    </div>
+  <footer class="bg-white border-t border-slate-200 py-4 text-xs text-slate-500 text-center">
+    Grace Medical Services Pvt. Ltd. • Standalone GitHub Pages Application with Multi-Month Storage
   </footer>
 
-  <!-- Scripts -->
   <script src="defaults.js"></script>
   <script src="sample_data.js"></script>
   <script src="app.js"></script>
