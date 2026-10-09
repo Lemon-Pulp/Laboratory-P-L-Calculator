@@ -192,7 +192,7 @@ function matchDoctor(docName) {
   const cleaned = cleanDoctorName(docName);
   const cleanedLower = cleaned.toLowerCase();
 
-  // 1. Exact Match
+  // 1. Exact or Cleaned Exact Match
   for (const [masterDoc, pct] of Object.entries(AppState.doctorCuts)) {
     if (masterDoc.toLowerCase() === docName.toLowerCase() || masterDoc.toLowerCase() === cleanedLower) {
       return { matchedName: masterDoc, percentage: Number(pct), matchType: 'EXACT', confidence: 1.0 };
@@ -223,7 +223,19 @@ function matchDoctor(docName) {
     }
   }
 
-  // 4. Strip Punctuation
+  // 4. Token Overlap without generic stopwords ('hospital', 'general', 'clinic')
+  const wordsDoc = strippedInitials.split(/\s+/).filter(w => w.length >= 3 && !['hospital', 'general', 'clinic', 'maternity', 'nursing', 'home'].includes(w));
+  if (wordsDoc.length > 0) {
+    const docSet = new Set(wordsDoc);
+    for (const [masterDoc, pct] of Object.entries(AppState.doctorCuts)) {
+      const wordsMaster = cleanDoctorName(masterDoc).toLowerCase().split(/\s+/).filter(w => w.length >= 3 && !['hospital', 'general', 'clinic', 'maternity', 'nursing', 'home'].includes(w));
+      if (wordsMaster.length > 0 && wordsMaster.length === docSet.size && wordsMaster.every(w => docSet.has(w))) {
+        return { matchedName: masterDoc, percentage: Number(pct), matchType: 'TOKEN_OVERLAP', confidence: 0.94 };
+      }
+    }
+  }
+
+  // 5. Strip Punctuation
   const alphaNumericClean = cleanedLower.replace(/[^a-z0-9]/g, '');
   for (const [masterDoc, pct] of Object.entries(AppState.doctorCuts)) {
     if (cleanDoctorName(masterDoc).toLowerCase().replace(/[^a-z0-9]/g, '') === alphaNumericClean) {
@@ -231,7 +243,7 @@ function matchDoctor(docName) {
     }
   }
 
-  // 5. Fuzzy Match with Levenshtein Distance
+  // 6. Fuzzy Match with Levenshtein Distance
   let bestMatch = null;
   let bestScore = 0;
   for (const [masterDoc, pct] of Object.entries(AppState.doctorCuts)) {
@@ -246,7 +258,7 @@ function matchDoctor(docName) {
     }
   }
 
-  if (bestMatch && bestScore >= 0.72) {
+  if (bestMatch && bestScore >= 0.75) {
     return {
       matchedName: bestMatch.masterDoc,
       percentage: Number(bestMatch.pct),
@@ -370,20 +382,19 @@ async function processExtractedRows(rawRows, fileName) {
     monthBuckets[monthLabel].push(billRecord);
   }
 
-  // Save new month(s) into IndexedDB
+  // Save into IndexedDB
   for (const [mName, bills] of Object.entries(monthBuckets)) {
     await LabStorage.saveMonthData(mName, bills);
     if (!AppState.months.includes(mName)) {
       AppState.months.push(mName);
     }
-    // Update memory: replace previous bills for that specific month and append
     AppState.parsedBills = AppState.parsedBills.filter(b => b.month !== mName).concat(bills);
   }
 
-  // Update unmatched doctor list
+  // Strictly check matchType starts with UNMATCHED (Never flag recognized 0% doctors!)
   const unmatched = new Map();
   AppState.parsedBills.forEach(b => {
-    if (b.doctorCutPct === 0 && b.doctor.toUpperCase() !== 'SELF' && b.doctor !== '') {
+    if (b.matchType && b.matchType.startsWith('UNMATCHED') && b.doctor.toUpperCase() !== 'SELF' && b.doctor !== '') {
       if (!unmatched.has(b.doctor)) {
         unmatched.set(b.doctor, { doctorName: b.doctor, branch: b.branch, count: 1, totalReceived: b.received });
       } else {
@@ -776,7 +787,7 @@ function renderFullPLSheet(results) {
   cols.forEach(c => html += `<td class="p-2 text-right border border-slate-800 ${c.netProfit >= 0 ? 'text-emerald-400' : 'text-rose-400'}">${formatNumber(c.netProfit)}</td>`);
   html += `<td class="p-2 text-right bg-slate-950 border border-slate-800 ${results.totals.netProfit >= 0 ? 'text-emerald-400' : 'text-rose-400'}">${formatNumber(results.totals.netProfit)}</td></tr>`;
 
-  html += `<tr class="bg-slate-100 font-bold border-b border-slate-300"><td class="p-2 border border-slate-300">Profit / Loss (%)</td>`;
+  html += `<tr class="bg-slate-100 font-bold border-b border-slate-300"><td class="p-2 text-slate-800 border border-slate-300">Profit / Loss (%)</td>`;
   cols.forEach(c => html += `<td class="p-2 text-right border border-slate-300 ${c.profitPct >= 0 ? 'text-emerald-600' : 'text-rose-600'}">${c.profitPct.toFixed(1)}%</td>`);
   html += `<td class="p-2 text-right bg-slate-200 border border-slate-300 font-bold">${results.totals.profitPct.toFixed(1)}%</td></tr>`;
 
