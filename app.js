@@ -319,11 +319,16 @@ function matchDoctor(docName) {
     }
   }
 
-  // 3. Middle Initial Omission / Branch Normalization (e.g. "brijesh k patel" -> "brijesh patel")
-  const strippedInitialsDoc = cleanedLower.replace(/\b[a-z]\b/g, '').replace(/\s+/g, ' ').trim();
+  // 3. Middle Initial Omission / Normalization (only allowed if initials do not conflict)
+  const docInitials = (cleanedLower.match(/\b[a-z]\b/g) || []);
+  const strippedInitialsDoc = cleanedLower.replace(/\b[a-z]\b/g, "").replace(/\s+/g, " ").trim();
   for (const [masterDoc, pct] of Object.entries(AppState.doctorCuts)) {
     const cleanMaster = cleanDoctorName(masterDoc).toLowerCase();
-    const strippedInitialsMaster = cleanMaster.replace(/\b[a-z]\b/g, '').replace(/\s+/g, ' ').trim();
+    const masterInitials = (cleanMaster.match(/\b[a-z]\b/g) || []);
+    if (docInitials.length > 0 && masterInitials.length > 0 && docInitials[0] !== masterInitials[0]) {
+      continue; // Conflict! (e.g. 'Rakesh B' vs 'Rakesh K')
+    }
+    const strippedInitialsMaster = cleanMaster.replace(/\b[a-z]\b/g, "").replace(/\s+/g, " ").trim();
     if (strippedInitialsDoc && strippedInitialsDoc === strippedInitialsMaster) {
       return { matchedName: masterDoc, percentage: Number(pct), matchType: 'STRIPPED_INITIAL', confidence: 0.96 };
     }
@@ -341,8 +346,7 @@ function matchDoctor(docName) {
     }
   }
 
-  // 5. Token-Aware Match with Typo Verification & Branch-Awareness
-  // Compares core doctor name tokens while recognizing Grace Lab branch location suffixes (Makarpura, Maneja, etc.)
+  // 5. Token-Aware Match with Typo Verification, Branch-Awareness & Optional Middle Initial
   const isMeaningful = w => !GENERIC_STOP_WORDS.has(w);
   const docTokens = wordsDoc.filter(isMeaningful);
 
@@ -353,22 +357,33 @@ function matchDoctor(docName) {
     const cleanMaster = cleanDoctorName(masterDoc).toLowerCase();
     const masterTokens = cleanMaster.split(/\s+/).filter(w => w.length > 0).filter(isMeaningful);
 
-    // Filter out branch keywords for core comparison (e.g. "RAKESH B PATEL MAKARPURA" vs "RAKESH B PATEL MANEJA")
     const docCoreTokens = docTokens.filter(w => !BRANCH_STOP_WORDS.has(w));
     const masterCoreTokens = masterTokens.filter(w => !BRANCH_STOP_WORDS.has(w));
 
     if (docCoreTokens.length === 0 || masterCoreTokens.length === 0) continue;
 
-    // Check match on core name tokens
+    // Separate full words (length >= 2) and initials (length === 1)
+    const docFullWords = docCoreTokens.filter(w => w.length >= 2);
+    const masterFullWords = masterCoreTokens.filter(w => w.length >= 2);
+    const docInits = docCoreTokens.filter(w => w.length === 1);
+    const masterInits = masterCoreTokens.filter(w => w.length === 1);
+
+    if (docFullWords.length === 0 || masterFullWords.length === 0) continue;
+
+    // If both have initials and they conflict, reject (e.g. 'Rakesh B Patel' vs 'Rakesh K Patel')
+    if (docInits.length > 0 && masterInits.length > 0 && docInits[0] !== masterInits[0]) {
+      continue;
+    }
+
     const matchedMasterIndices = new Set();
-    let allDocMatched = true;
+    let allDocFullMatched = true;
     let totalScore = 0;
 
-    for (const dw of docCoreTokens) {
+    for (const dw of docFullWords) {
       let found = false;
-      for (let mi = 0; mi < masterCoreTokens.length; mi++) {
+      for (let mi = 0; mi < masterFullWords.length; mi++) {
         if (matchedMasterIndices.has(mi)) continue;
-        const mw = masterCoreTokens[mi];
+        const mw = masterFullWords[mi];
         const res = isWordMatch(dw, mw);
         if (res.match) {
           matchedMasterIndices.add(mi);
@@ -378,13 +393,13 @@ function matchDoctor(docName) {
         }
       }
       if (!found) {
-        allDocMatched = false;
+        allDocFullMatched = false;
         break;
       }
     }
 
-    if (allDocMatched && matchedMasterIndices.size === masterCoreTokens.length) {
-      const avgScore = totalScore / docCoreTokens.length;
+    if (allDocFullMatched && matchedMasterIndices.size === masterFullWords.length) {
+      const avgScore = totalScore / docFullWords.length;
       if (avgScore > bestScore) {
         bestScore = avgScore;
         bestMatch = { masterDoc, pct, score: avgScore, matchType: 'Smart Match (' + Math.round(avgScore * 100) + '%)' };
