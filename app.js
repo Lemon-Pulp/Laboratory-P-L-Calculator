@@ -166,13 +166,14 @@ async function initApp() {
 // ==========================================
 
 function cleanDoctorName(name) {
-  if (!name) return '';
+  if (!name) return "";
   let s = String(name).trim();
-  s = s.replace(/^(Dr\.|Dr\s+|DR\.|DR\s+|Doctor\s+)/i, '').trim();
-  s = s.replace(/\(.*?\)/g, '').trim(); // Remove parentheticals
-  s = s.replace(/[.\s-]+$/, '').trim(); // Remove trailing punctuation
-  s = s.replace(/[.]/g, ' ');           // Replace internal dots with space (N.S. -> N S)
-  s = s.replace(/\s+/g, ' ');           // Collapse multiple spaces
+  s = s.replace(/^(Dr\.|Dr\s+|DR\.|DR\s+|Doctor\s+|Doc\.\s*)/i, "").trim();
+  s = s.replace(/\(.*?\)/g, "").trim(); // Remove parentheticals
+  s = s.replace(/\b(extra\s+salary|salary|dup|fixed|commission)\b/gi, "").trim(); // Administrative labels
+  s = s.replace(/[.\s-]+$/, "").trim(); // Remove trailing punctuation
+  s = s.replace(/[.]/g, " ");           // Replace internal dots with space (N.S. -> N S)
+  s = s.replace(/\s+/g, " ");           // Collapse multiple spaces
   return s;
 }
 
@@ -197,99 +198,221 @@ function levenshteinDistance(a, b) {
   return matrix[b.length][a.length];
 }
 
+function normalizeTransliteration(w) {
+  let s = String(w || "").toLowerCase();
+  s = s.replace(/ee/g, "i").replace(/oo/g, "u").replace(/aa/g, "a");
+  s = s.replace(/sh/g, "s");
+  s = s.replace(/v/g, "w");
+  return s;
+}
+
+function isWordMatch(w1, w2) {
+  if (!w1 || !w2) return { match: false, reason: "EMPTY" };
+  const s1 = w1.toLowerCase();
+  const s2 = w2.toLowerCase();
+
+  // 1. Exact token match
+  if (s1 === s2) {
+    return { match: true, reason: "EXACT_WORD" };
+  }
+
+  // 2. Gujarati honorific suffixes (-bhai, -ben, -kumar, -ji)
+  const suffixes = ["bhai", "ben", "kumar", "ji"];
+  for (const suf of suffixes) {
+    if (s1 + suf === s2 || s2 + suf === s1) {
+      return { match: true, reason: "HONORIFIC_SUFFIX" };
+    }
+  }
+
+  // 3. Initial / Abbreviation: e.g. "k" matching "kunal" or "b" matching "brijesh"
+  if ((s1.length === 1 && s2.length > 1 && s2.startsWith(s1)) ||
+      (s2.length === 1 && s1.length > 1 && s1.startsWith(s2))) {
+    return { match: true, reason: "INITIAL_MATCH" };
+  }
+
+  // 4. Common Indian phonetic transliteration equivalence (e.g. deepak vs dipak)
+  if (normalizeTransliteration(s1) === normalizeTransliteration(s2)) {
+    return { match: true, reason: "TRANSLITERATION" };
+  }
+
+  // 5. HARD RULE: For any spelling typo or variation, FIRST LETTER MUST BE IDENTICAL!
+  // Prevents completely different given names from falsely matching:
+  // e.g. Shivam vs Abhinam ("s" vs "a"), Ajay vs Vijay ("a" vs "v"), Anil vs Sunil ("a" vs "s")
+  if (s1.charAt(0) !== s2.charAt(0)) {
+    return { match: false, reason: "DIFFERENT_FIRST_LETTER" };
+  }
+
+  // 6. Consonant / Vowel Skeleton (e.g. shukla vs shukala, chotalia vs chotalya)
+  // Both start with the same letter; strip vowels and compare consonant skeleton
+  const v1 = s1.replace(/[aeiou]/g, "");
+  const v2 = s2.replace(/[aeiou]/g, "");
+  if (v1 === v2 && v1.length >= 3) {
+    return { match: true, reason: "VOWEL_SKELETON" };
+  }
+  // Single "h" variant (e.g. brambhatt vs brahmbhatt)
+  if (v1.replace(/h/g, "") === v2.replace(/h/g, "") && v1.replace(/h/g, "").length >= 3) {
+    return { match: true, reason: "H_VARIANT" };
+  }
+
+  // 7. Single Character Typo (Insertion / Deletion) in longer words (length >= 5)
+  // e.g. dube vs dubey (length 4 vs 5, dist 1), patele vs patel
+  const longer = Math.max(s1.length, s2.length);
+  const dist = levenshteinDistance(s1, s2);
+  if (longer >= 5 && dist === 1 && Math.abs(s1.length - s2.length) === 1) {
+    return { match: true, reason: "INSERTION_TYPO" };
+  }
+
+  return { match: false, reason: "NO_MATCH" };
+}
+
 function matchDoctor(docName) {
-  if (!docName || docName.trim() === '.' || docName.trim() === '') {
-    return { matchedName: 'SELF', percentage: 0, matchType: 'SELF', confidence: 1.0 };
+  if (!docName || docName.trim() === "." || docName.trim() === "") {
+    return { matchedName: "SELF", percentage: 0, matchType: "SELF", confidence: 1.0 };
   }
 
   const rawUpper = String(docName).trim().toUpperCase();
-  if (rawUpper === 'SELF' || rawUpper === 'SELF 1' || rawUpper.includes('SELF')) {
-    return { matchedName: 'SELF', percentage: 0, matchType: 'SELF', confidence: 1.0 };
+  if (rawUpper === "SELF" || rawUpper === "SELF 1" || rawUpper.includes("SELF") || rawUpper.includes("ONGC")) {
+    return { matchedName: "SELF", percentage: 0, matchType: "SELF", confidence: 1.0 };
   }
 
-  // 1. Check exact raw match in dictionary (e.g. user manually assigned raw string)
+  // 1. Check exact raw match in dictionary (e.g. user manually assigned raw string or override)
   if (AppState.doctorCuts[docName] !== undefined) {
-    return { matchedName: docName, percentage: Number(AppState.doctorCuts[docName]), matchType: 'EXACT', confidence: 1.0 };
+    return { matchedName: docName, percentage: Number(AppState.doctorCuts[docName]), matchType: "EXACT", confidence: 1.0 };
   }
 
   const cleaned = cleanDoctorName(docName);
   const cleanedLower = cleaned.toLowerCase();
 
-  if (cleanedLower === 'self' || cleanedLower.includes('ongc')) {
-    return { matchedName: 'SELF', percentage: 0, matchType: 'SELF', confidence: 1.0 };
+  if (cleanedLower === "self" || cleanedLower.includes("ongc")) {
+    return { matchedName: "SELF", percentage: 0, matchType: "SELF", confidence: 1.0 };
   }
 
-  // 2. Exact match on cleaned string
+  // 2. Exact match on cleaned string (case-insensitive)
   for (const [masterDoc, pct] of Object.entries(AppState.doctorCuts)) {
     if (masterDoc.toLowerCase() === docName.toLowerCase() || masterDoc.toLowerCase() === cleanedLower) {
-      return { matchedName: masterDoc, percentage: Number(pct), matchType: 'EXACT', confidence: 1.0 };
+      return { matchedName: masterDoc, percentage: Number(pct), matchType: "EXACT", confidence: 1.0 };
     }
     const cleanMaster = cleanDoctorName(masterDoc).toLowerCase();
     if (cleanMaster === cleanedLower) {
-      return { matchedName: masterDoc, percentage: Number(pct), matchType: 'EXACT_CLEAN', confidence: 0.98 };
+      return { matchedName: masterDoc, percentage: Number(pct), matchType: "EXACT_CLEAN", confidence: 0.98 };
     }
   }
 
-  // 3. Strip Middle Initials (e.g. 'brijesh k patel' -> 'brijesh patel', 'umang c joshi' -> 'umang joshi')
-  const strippedInitials = cleanedLower.replace(/\s+[a-z]\s+/g, ' ').trim();
+  // 3. Strip Middle Initials (e.g. "brijesh k patel" -> "brijesh patel", "umang c joshi" -> "umang joshi")
+  const strippedInitials = cleanedLower.replace(/\s+[a-z]\s+/g, " ").trim();
   for (const [masterDoc, pct] of Object.entries(AppState.doctorCuts)) {
-    const cleanMaster = cleanDoctorName(masterDoc).toLowerCase().replace(/\s+[a-z]\s+/g, ' ').trim();
+    const cleanMaster = cleanDoctorName(masterDoc).toLowerCase().replace(/\s+[a-z]\s+/g, " ").trim();
     if (cleanMaster === strippedInitials) {
-      return { matchedName: masterDoc, percentage: Number(pct), matchType: 'STRIPPED_INITIAL', confidence: 0.96 };
+      return { matchedName: masterDoc, percentage: Number(pct), matchType: "STRIPPED_INITIAL", confidence: 0.96 };
     }
   }
 
-  // 4. Token Overlap without generic stopwords ('hospital', 'general', 'clinic', 'maternity', 'nursing')
-  const stopWords = ['hospital', 'general', 'clinic', 'maternity', 'nursing', 'home', 'centre', 'center'];
-  const wordsDoc = strippedInitials.split(/\s+/).filter(w => w.length >= 3 && !stopWords.includes(w));
-  if (wordsDoc.length > 0) {
-    const docSet = new Set(wordsDoc);
+  // 4. Token Inversion / Word Set Match (e.g. "Patel Brijesh" vs "Brijesh Patel")
+  const wordsDoc = strippedInitials.split(/\s+/).filter(w => w.length > 0);
+  const wordsDocSet = new Set(wordsDoc);
+  if (wordsDoc.length >= 2) {
     for (const [masterDoc, pct] of Object.entries(AppState.doctorCuts)) {
-      const wordsMaster = cleanDoctorName(masterDoc).toLowerCase().split(/\s+/).filter(w => w.length >= 3 && !stopWords.includes(w));
-      if (wordsMaster.length > 0 && wordsMaster.length === docSet.size && wordsMaster.every(w => docSet.has(w))) {
-        return { matchedName: masterDoc, percentage: Number(pct), matchType: 'TOKEN_OVERLAP', confidence: 0.94 };
+      const wordsMaster = cleanDoctorName(masterDoc).toLowerCase().split(/\s+/).filter(w => w.length > 0);
+      if (wordsMaster.length === wordsDoc.length && wordsMaster.every(w => wordsDocSet.has(w))) {
+        return { matchedName: masterDoc, percentage: Number(pct), matchType: "TOKEN_INVERSION", confidence: 0.95 };
       }
     }
   }
 
-  // 5. Vowel-Collapse Normalization (e.g. shukla vs shukala, dube vs dubey, chotalia vs chotalya)
-  const noVowelsDoc = strippedInitials.replace(/[aeiou\s]/g, '');
-  if (noVowelsDoc.length >= 4) {
-    for (const [masterDoc, pct] of Object.entries(AppState.doctorCuts)) {
-      const cleanMaster = cleanDoctorName(masterDoc).toLowerCase().replace(/\s+[a-z]\s+/g, ' ').trim();
-      const noVowelsMaster = cleanMaster.replace(/[aeiou\s]/g, '');
-      if (noVowelsDoc === noVowelsMaster) {
-        return { matchedName: masterDoc, percentage: Number(pct), matchType: 'PHONETIC_MATCH', confidence: 0.90 };
-      }
-    }
-  }
+  // 5. Token-Aware Match with Strict First-Name & Last-Name Typo Verification
+  // Prevents false positives where different doctors share a common surname (e.g. Shivam Patel vs Abhinam Patel)
+  const stopWords = new Set(["hospital", "general", "clinic", "maternity", "nursing", "home", "centre", "center", "dr", "doctor"]);
+  const meaningfulDocWords = wordsDoc.filter(w => !stopWords.has(w));
 
-  // 6. Fuzzy Match with Levenshtein Distance
   let bestMatch = null;
   let bestScore = 0;
-  for (const [masterDoc, pct] of Object.entries(AppState.doctorCuts)) {
-    const cleanMaster = cleanDoctorName(masterDoc).toLowerCase();
-    const longer = Math.max(cleanedLower.length, cleanMaster.length);
-    if (longer === 0) continue;
-    const dist = levenshteinDistance(cleanedLower, cleanMaster);
-    const score = (longer - dist) / parseFloat(longer);
-    if (score > bestScore) {
-      bestScore = score;
-      bestMatch = { masterDoc, pct, score };
+
+  if (meaningfulDocWords.length >= 2) {
+    for (const [masterDoc, pct] of Object.entries(AppState.doctorCuts)) {
+      const cleanMaster = cleanDoctorName(masterDoc).toLowerCase();
+      const wordsMaster = cleanMaster.split(/\s+/).filter(w => w.length > 0);
+      const meaningfulMasterWords = wordsMaster.filter(w => !stopWords.has(w));
+
+      // Don"t compare if word counts diverge widely (allow +/- 1 for middle names/initials)
+      if (Math.abs(meaningfulDocWords.length - meaningfulMasterWords.length) > 1) {
+        continue;
+      }
+
+      // Check if all meaningful words in bill have a verified match in master
+      const matchedMasterIndices = new Set();
+      let allWordsMatched = true;
+      let totalTokenScore = 0;
+
+      for (const dw of meaningfulDocWords) {
+        let foundWord = false;
+        for (let mi = 0; mi < meaningfulMasterWords.length; mi++) {
+          if (matchedMasterIndices.has(mi)) continue;
+          const mw = meaningfulMasterWords[mi];
+          const check = isWordMatch(dw, mw);
+          if (check.match) {
+            matchedMasterIndices.add(mi);
+            foundWord = true;
+            totalTokenScore += (check.reason === "EXACT_WORD" ? 1.0 : 0.9);
+            break;
+          }
+        }
+        if (!foundWord) {
+          allWordsMatched = false;
+          break;
+        }
+      }
+
+      if (allWordsMatched && matchedMasterIndices.size >= meaningfulDocWords.length - 1) {
+        const avgScore = totalTokenScore / Math.max(meaningfulDocWords.length, meaningfulMasterWords.length);
+        if (avgScore > bestScore) {
+          bestScore = avgScore;
+          bestMatch = { masterDoc, pct, score: avgScore, matchType: "Smart Match (" + Math.round(avgScore * 100) + "%)" };
+        }
+      }
     }
   }
 
-  if (bestMatch && bestScore >= 0.75) {
+  if (bestMatch && bestScore >= 0.85) {
     return {
       matchedName: bestMatch.masterDoc,
       percentage: Number(bestMatch.pct),
-      matchType: 'FUZZY (' + Math.round(bestScore * 100) + '%)',
+      matchType: bestMatch.matchType,
       confidence: bestScore
     };
   }
 
-  // 7. Genuinely Unmatched
-  return { matchedName: docName, percentage: 0, matchType: 'UNMATCHED (0% fallback)', confidence: 0.0 };
+  // 6. Strict High-Threshold Fuzzy Match for Single-Word / Clinic / Hospital Names ONLY
+  // Multi-word doctor names MUST NOT use naive whole-string fuzzy to prevent surname conflation!
+  if (meaningfulDocWords.length === 1 || cleanedLower.includes("hospital") || cleanedLower.includes("clinic")) {
+    for (const [masterDoc, pct] of Object.entries(AppState.doctorCuts)) {
+      const cleanMaster = cleanDoctorName(masterDoc).toLowerCase();
+      const longer = Math.max(cleanedLower.length, cleanMaster.length);
+      if (longer < 6) continue;
+      const dist = levenshteinDistance(cleanedLower, cleanMaster);
+      const score = (longer - dist) / parseFloat(longer);
+      if (score >= 0.88 && score > bestScore) {
+        bestScore = score;
+        bestMatch = {
+          masterDoc,
+          pct,
+          score,
+          matchType: "Fuzzy Match (" + Math.round(score * 100) + "%)"
+        };
+      }
+    }
+  }
+
+  if (bestMatch && bestScore >= 0.88) {
+    return {
+      matchedName: bestMatch.masterDoc,
+      percentage: Number(bestMatch.pct),
+      matchType: bestMatch.matchType,
+      confidence: bestScore
+    };
+  }
+
+  // 7. Genuinely Unmatched -> Returns as Unmatched so user can easily classify with 1 click
+  return { matchedName: docName, percentage: 0, matchType: "UNMATCHED (0% fallback)", confidence: 0.0 };
 }
 
 // Recomputes doctor matches across all parsed transactions and rebuilds unmatched list
