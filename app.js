@@ -308,6 +308,17 @@ function matchDoctor(docName) {
     }
   }
 
+  // 2b. Exact match ignoring internal spacing (e.g. 'X L RADIOLOGY' vs 'XL radiology', 'H C G' vs 'HCG')
+  const noSpaceDoc = cleanedLower.replace(/\s+/g, '');
+  if (noSpaceDoc.length >= 4) {
+    for (const [masterDoc, pct] of Object.entries(AppState.doctorCuts)) {
+      const cleanMaster = cleanDoctorName(masterDoc).toLowerCase();
+      if (cleanMaster.replace(/\s+/g, '') === noSpaceDoc) {
+        return { matchedName: masterDoc, percentage: Number(pct), matchType: 'EXACT_CLEAN', confidence: 0.98 };
+      }
+    }
+  }
+
   // 3. Middle Initial Omission / Branch Normalization (e.g. "brijesh k patel" -> "brijesh patel")
   const strippedInitialsDoc = cleanedLower.replace(/\b[a-z]\b/g, '').replace(/\s+/g, ' ').trim();
   for (const [masterDoc, pct] of Object.entries(AppState.doctorCuts)) {
@@ -391,7 +402,7 @@ function matchDoctor(docName) {
   }
 
   // 6. Strict High-Threshold Fuzzy Match for Single-Word / Clinic / Hospital Names ONLY
-  if (docTokens.length === 1 || cleanedLower.includes('hospital') || cleanedLower.includes('clinic')) {
+  if (docTokens.length === 1 || cleanedLower.includes('hospital') || cleanedLower.includes('clinic') || cleanedLower.includes('radiology') || cleanedLower.includes('imaging') || cleanedLower.includes('diagnostic')) {
     for (const [masterDoc, pct] of Object.entries(AppState.doctorCuts)) {
       const cleanMaster = cleanDoctorName(masterDoc).toLowerCase();
       const longer = Math.max(cleanedLower.length, cleanMaster.length);
